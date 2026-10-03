@@ -366,6 +366,9 @@ const HUMAN_WEIGHTS = {
    SETTINGS
    ========================================================= */
 
+let setupMode = "random";
+let roundComposition = "mixed";
+
 let settings = {
     enabled: {},
     counts: {}
@@ -590,6 +593,7 @@ function targetOptions(actor = null, excludeId = null) {
                 actor &&
                 roleTeam(actor) === "Hostile" &&
                 roleTeam(p) === "Hostile" &&
+                !game.players.every(player => roleTeam(player.originalRole) === "Hostile") &&
                 !(
                     game.displaySwap &&
                     game.displaySwap.includes(p.id)
@@ -814,64 +818,26 @@ function bindSetupNames() {
 
 
 function bindSetupSelects() {
-
-    document
-        .querySelectorAll(".role-select")
-        .forEach(select => {
-
-            select.addEventListener("change", () => {
-
-                const index =
-                    Number(select.dataset.index);
-
-                const value = select.value;
-
-                if (value === "random") {
-
-                    delete game.randomRoles[index];
-
-                    select.classList.remove(
-                        "random-hidden"
-                    );
-
-                    return;
-                }
-
-                /*
-                   Manual role selection replaces RANDOM.
-                */
-
-                game.randomisedRoles = true;
-
-                game.randomRoles[index] = value;
-
-                select.value = "random";
-
-                select.classList.add(
-                    "random-hidden"
-                );
-            });
-        });
+    document.querySelectorAll(".role-select").forEach(select => {
+        const index = Number(select.dataset.index);
+        select.value = game.randomRoles[index] || "random";
+        select.closest("label").hidden = setupMode !== "manual";
+        select.onchange = () => {
+            if (select.value === "random") delete game.randomRoles[index];
+            else game.randomRoles[index] = select.value;
+            game.randomisedRoles = true;
+            updatePlayerValidity();
+        };
+    });
 }
 
 
 function updatePlayerValidity() {
-
-    const count = game.players.length;
-
-    const total =
-        Object.values(settings.counts)
-            .reduce((a, b) => a + b, 0);
-
-    if ($("playerValidity")) {
-
-        $("playerValidity").textContent =
-            `PLAYERS: ${count} / ${count}  •  ${
-                total
-                    ? `CUSTOM ROLES: ${total} / ${count}`
-                    : "RANDOM ROLES"
-            }`;
-    }
+    const assigned = Object.keys(game.randomRoles).length;
+    $("playerValidity").textContent = setupMode === "manual"
+        ? `${assigned} / ${game.players.length} roles selected · Host eyes only`
+        : `${game.players.length} crew members · ${game.randomisedRoles ? "Roles sealed. Ready to launch." : "Roles will be secretly assigned at launch."}`;
+    $("randomRolesButton").hidden = setupMode === "manual";
 }
 
 
@@ -903,201 +869,53 @@ function weightedPick(items, weights) {
 }
 
 
+// One generator for local and online play. Keep the chosen composition secret.
+function generateRoles(count) {
+    if (count < 2 || count > 12) throw new Error("Choose 2–12 players.");
+    const enabled = pool => pool.filter(role => settings.enabled[role]);
+    const pickMany = (pool, amount) => {
+        if (!pool.length && amount) throw new Error("Enable at least one role for the selected team in Custom Roles.");
+        const result = [];
+        let available = shuffle(pool);
+        for (let i = 0; i < amount; i++) {
+            if (!available.length) available = shuffle(pool);
+            const role = weightedPick(available, Object.fromEntries(available.map(r => [r, HUMAN_WEIGHTS[r] || 10])));
+            result.push(role);
+            available = available.filter(r => r !== role);
+        }
+        return result;
+    };
+    const composition = roundComposition === "mixed" && Math.random() < 0.2 ? "good" : roundComposition;
+    if (composition === "good") return shuffle(["engineer", ...pickMany(enabled(HUMANS.filter(r => r !== "engineer")), count - 1)]);
+    if (composition === "neutral") return pickMany(enabled([...NEUTRALS, ...CONCEPTS]), count);
+    if (composition === "evil") return pickMany(enabled(HOSTILES), count);
+    const roles = [...pickMany(enabled(HOSTILES), HOSTILE_COUNTS[count]), "engineer"];
+    const neutrals = enabled([...NEUTRALS, ...CONCEPTS]);
+    if (roles.length < count && neutrals.length && Math.random() < 0.5) roles.push(rand(neutrals));
+    return shuffle([...roles, ...pickMany(enabled(HUMANS.filter(r => r !== "engineer")), count - roles.length)]);
+}
+
+function selectedStartingRoles() {
+    const count = game.players.length;
+    if (setupMode !== "manual" && (!game.randomisedRoles || Object.keys(game.randomRoles).length !== count)) {
+        game.randomRoles = Object.fromEntries(generateRoles(count).map((r, i) => [i, r]));
+        game.randomisedRoles = true;
+    }
+    const roles = Array.from({length: count}, (_, i) => game.randomRoles[i]);
+    if (roles.some(r => !ALL_STARTING_ROLES.includes(r) || !settings.enabled[r])) throw new Error("Choose an enabled role for every player.");
+    if (setupMode !== "manual" && roundComposition !== "mixed") {
+        const team = {good: "Human", neutral: "Neutral", evil: "Hostile"}[roundComposition];
+        if (roles.some(r => roleTeam(r) !== team)) throw new Error("Regenerate roles to match the selected round type.");
+    }
+    return roles;
+}
+
 function randomiseRoles() {
-
-    const count =
-        game.players.length;
-
-    const hostileCount =
-        HOSTILE_COUNTS[count];
-
-    if (!hostileCount) {
-        alert(
-            "Random roles only support 2–12 players."
-        );
-
-        return;
-    }
-
-    const enabledHostiles =
-        HOSTILES.filter(
-            role =>
-                settings.enabled[role]
-        );
-
-    if (
-        enabledHostiles.length <
-        hostileCount
-    ) {
-        alert(
-            "Enable enough Hostile roles for this player count."
-        );
-
-        return;
-    }
-
-    /*
-       HOSTILES
-    */
-
-    const roles = [];
-
-    roles.push(
-        ...shuffle(
-            enabledHostiles
-        ).slice(
-            0,
-            hostileCount
-        )
-    );
-
-    /*
-       ENGINEER
-       Always exactly one.
-    */
-
-    roles.push(
-        "engineer"
-    );
-
-    /*
-       Remaining slots.
-    */
-
-    let remaining =
-        count - roles.length;
-
-    /*
-       Give Neutral roles a chance
-       when they are enabled.
-
-       This is especially important for
-       small games so King/Jester can
-       actually appear.
-    */
-
-    const enabledNeutrals =
-        [...NEUTRALS, ...CONCEPTS]
-            .filter(
-                role =>
-                    settings.enabled[role]
-            );
-
-    /*
-       At least one Neutral is allowed
-       in games with enough room.
-
-       For 2 players there is no room:
-       Hostile + Engineer.
-    */
-
-    let neutralCount = 0;
-
-    if (
-        remaining >= 1 &&
-        enabledNeutrals.length > 0 &&
-        count >= 3
-    ) {
-        neutralCount = 1;
-    }
-
-    /*
-       Add a Neutral first.
-    */
-
-    if (neutralCount) {
-
-        const neutral =
-            shuffle(
-                enabledNeutrals
-            )[0];
-
-        roles.push(
-            neutral
-        );
-
-        remaining--;
-    }
-
-    /*
-       Fill all remaining slots
-       with unique Human roles.
-    */
-
-    let humanPool =
-        HUMANS.filter(
-            role =>
-                role !== "engineer" &&
-                settings.enabled[role]
-        );
-
-    if (
-        humanPool.length <
-        remaining
-    ) {
-        alert(
-            "Enable enough Human roles for this player count."
-        );
-
-        return;
-    }
-
-    for (
-        let i = 0;
-        i < remaining;
-        i++
-    ) {
-
-        const chosen =
-            weightedPick(
-                humanPool,
-                HUMAN_WEIGHTS
-            );
-
-        roles.push(
-            chosen
-        );
-
-        humanPool =
-            humanPool.filter(
-                role =>
-                    role !== chosen
-            );
-    }
-
-    /*
-       Safety check.
-    */
-
-    if (
-        roles.length !== count
-    ) {
-        alert(
-            "Could not create a valid role setup."
-        );
-
-        return;
-    }
-
-    /*
-       Shuffle the final roles.
-    */
-
-    const shuffledRoles =
-        shuffle(roles);
-
-    game.randomRoles =
-        Object.fromEntries(
-            shuffledRoles.map(
-                (role, index) =>
-                    [index, role]
-            )
-        );
-
-    game.randomisedRoles =
-        true;
-
-    renderSetup();
+    try {
+        game.randomRoles = Object.fromEntries(generateRoles(game.players.length).map((role, i) => [i, role]));
+        game.randomisedRoles = true;
+        renderSetup();
+    } catch (error) { alert(error.message); }
 }
 
 /* =========================================================
@@ -1113,128 +931,9 @@ function startGame() {
         return;
     }
 
-    const count =
-        game.players.length;
-
-    const requiredHostiles =
-        HOSTILE_COUNTS[count];
-
-    let roles =
-        game.randomisedRoles
-            ? Array.from(
-                { length: count },
-                (_, i) =>
-                    game.randomRoles[i]
-            )
-            : Array.from(
-                { length: count },
-                (_, i) =>
-                    game.players[i].role
-            );
-
-    if (
-        roles.some(
-            role =>
-                !role ||
-                role === "random"
-        )
-    ) {
-
-        alert(
-            "Choose roles or press RANDOMISE ROLES first."
-        );
-
-        return;
-    }
-
-    /*
-       Make sure Engineer exists exactly once.
-    */
-
-    if (!roles.includes("engineer")) {
-
-        const replacement =
-            roles.findIndex(
-                role =>
-                    !HOSTILES.includes(role)
-            );
-
-        if (replacement >= 0) {
-            roles[replacement] = "engineer";
-        }
-    }
-
-    const counts = {};
-
-    roles.forEach(role => {
-        counts[role] =
-            (counts[role] || 0) + 1;
-    });
-
-    if (counts.engineer !== 1) {
-
-        alert(
-            "There must be exactly 1 Engineer."
-        );
-
-        return;
-    }
-
-    const hostileTotal =
-        HOSTILES.reduce(
-            (sum, role) =>
-                sum + (counts[role] || 0),
-            0
-        );
-
-    if (
-        hostileTotal !==
-        requiredHostiles
-    ) {
-
-        alert(
-            `This setup needs exactly ${requiredHostiles} Hostile role(s).`
-        );
-
-        return;
-    }
-
-    const valid =
-        roles.every(
-            role =>
-                ROLE_DATA[role] &&
-                !ROLE_DATA[role].sub &&
-                (
-                    settings.enabled[role] ||
-                    role === "engineer"
-                )
-        );
-
-    if (!valid) {
-
-        alert(
-            "A disabled role is selected."
-        );
-
-        return;
-    }
-
-    /*
-       No duplicate starting roles.
-       Engineer is allowed once.
-    */
-
-    if (
-        new Set(roles).size !==
-        roles.length
-    ) {
-
-        alert(
-            "Starting roles cannot be duplicated."
-        );
-
-        return;
-    }
+    let roles;
+    try { roles = selectedStartingRoles(); }
+    catch (error) { alert(error.message); return; }
 
     game.players.forEach(
         (player, index) => {
@@ -3895,6 +3594,10 @@ function proceedToSystems() {
    ========================================================= */
 
 function earthCheck() {
+    if (living().length && living().every(isHostile)) {
+        endGame("HOSTILE VICTORY", "The Hostile crew reached Earth.");
+        return;
+    }
 
     const neutrals =
         living().filter(
@@ -3926,6 +3629,19 @@ function checkVictory() {
     if (game.gameOver) return true;
 
     const alivePlayers = living();
+    const startingTeams = new Set(game.players.map(p => roleTeam(p.originalRole)));
+    if (startingTeams.size === 1) {
+        const team = [...startingTeams][0];
+        if (team !== "Human" && alivePlayers.length <= 1) {
+            endGame(team === "Hostile" ? "HOSTILE VICTORY" : "NEUTRAL VICTORY", alivePlayers.length ? `${alivePlayers[0].name} is the last player aboard.` : "Nobody survived the voyage.");
+            return true;
+        }
+        if (!alivePlayers.length) {
+            endGame("CREW LOST", "Nobody survived the voyage.");
+            return true;
+        }
+        return false;
+    }
 
     const hostiles =
         alivePlayers.filter(
@@ -4521,9 +4237,7 @@ function renderCustomRoles() {
                             roles
                                 .map(role => {
 
-                                    const locked =
-                                        role ===
-                                        "engineer";
+                                    const locked = false;
 
                                     return `
                                         <div
@@ -4545,7 +4259,7 @@ function renderCustomRoles() {
                                                 <input
                                                     type="number"
                                                     min="0"
-                                                    max="1"
+                                                    max="12"
                                                     value="${
                                                         settings.counts[
                                                             role
@@ -4641,7 +4355,7 @@ function renderCustomRoles() {
                     Math.max(
                         0,
                         Math.min(
-                            1,
+                            12,
                             Number(input.value) ||
                             0
                         )
@@ -4697,44 +4411,9 @@ function applyCustomRoles() {
         return;
     }
 
-    if (
-        !selected.includes("engineer")
-    ) {
-
-        alert(
-            "Engineer is required."
-        );
-
-        return;
-    }
-
-    if (
-        selected.filter(
-            role =>
-                HOSTILES.includes(role)
-        ).length !==
-        HOSTILE_COUNTS[count]
-    ) {
-
-        alert(
-            `You need exactly ${HOSTILE_COUNTS[count]} Hostile role(s).`
-        );
-
-        return;
-    }
-
-    if (
-        new Set(selected).size !==
-        selected.length
-    ) {
-
-        alert(
-            "Custom starting roles cannot be duplicated."
-        );
-
-        return;
-    }
-
+    setupMode = "manual";
+    $("assignmentMode").value = "manual";
+    $("roundComposition").disabled = true;
     game.randomRoles =
         Object.fromEntries(
             shuffle(selected)
@@ -5155,14 +4834,16 @@ if (playersBox) {
 
     if (game.mode === "online") {
 
-        if (setupList)
-            setupList.style.display = "none";
+        if (setupList) {
+            setupList.style.display = online.isHost ? "" : "none";
+            if (online.isHost) renderSetup();
+        }
 
         if (playerValidity)
-            playerValidity.style.display = "none";
+            playerValidity.style.display = online.isHost ? "" : "none";
 
         if (setupActions)
-            setupActions.style.display = "none";
+            setupActions.style.display = online.isHost ? "" : "none";
 
         if (playerCount)
             playerCount.closest("label")?.style
@@ -5183,6 +4864,9 @@ if (playersBox) {
             playerCount.closest("label")?.style
                 && (playerCount.closest("label").style.display = "");
     }
+
+    document.querySelector(".mission-controls").hidden = game.mode === "online" && !online.isHost;
+    $("startGameButton").hidden = game.mode === "online";
 
     const hostButton =
         $("onlineHostStartButton");
@@ -6496,251 +6180,15 @@ resetTransient();
    ========================================================= */
 
 function assignOnlineRoles() {
-
-    const count =
-        game.players.length;
-
-    const hostileCount =
-        HOSTILE_COUNTS[count];
-
-    if (!hostileCount) {
-
-      throw new Error(
-    "Online mode supports 2–12 players."
-);
-    }
-
-    /*
-       If host selected explicit random roles,
-       use them when possible.
-
-       Otherwise generate the normal random setup.
-    */
-
-    let roles =
-        [];
-
-    const manual =
-        game.randomisedRoles &&
-        Object.keys(
-            game.randomRoles
-        ).length === count;
-
-    if (manual) {
-
-        roles =
-            Array.from(
-                { length: count },
-                (_, i) =>
-                    game.randomRoles[i]
-            );
-
-} else {
-
-    const enabledHostiles =
-        HOSTILES.filter(
-            role =>
-                settings.enabled[role]
-        );
-
-    if (
-        enabledHostiles.length <
-        hostileCount
-    ) {
-        throw new Error(
-            "Enable enough Hostile roles."
-        );
-    }
-
-    /*
-       HOSTILES
-    */
-
-    roles.push(
-        ...shuffle(
-            enabledHostiles
-        ).slice(
-            0,
-            hostileCount
-        )
-    );
-
-    /*
-       ENGINEER
-       Always exactly one.
-    */
-
-    roles.push(
-        "engineer"
-    );
-
-    /*
-       Work out remaining slots.
-    */
-
-    let remaining =
-        count -
-        roles.length;
-
-    /*
-       Give Neutral roles a chance
-       before filling the remaining
-       slots with Humans.
-
-       This allows King/Jester to
-       actually appear in online games.
-    */
-
-    const enabledNeutrals =
-        [...NEUTRALS, ...CONCEPTS]
-            .filter(
-                role =>
-                    settings.enabled[role]
-            );
-
-    let neutralCount = 0;
-
-    /*
-       2 players:
-       Hostile + Engineer
-
-       3+ players:
-       allow one Neutral when enabled.
-    */
-
-    if (
-        remaining >= 1 &&
-        enabledNeutrals.length > 0 &&
-        count >= 3
-    ) {
-        neutralCount = 1;
-    }
-
-    if (neutralCount) {
-
-        const neutral =
-            shuffle(
-                enabledNeutrals
-            )[0];
-
-        roles.push(
-            neutral
-        );
-
-        remaining--;
-    }
-
-    /*
-       Fill the remaining slots
-       with unique Human roles.
-    */
-
-    let pool =
-        HUMANS.filter(
-            role =>
-                role !== "engineer" &&
-                settings.enabled[role]
-        );
-
-    if (
-        pool.length <
-        remaining
-    ) {
-        throw new Error(
-            "Not enough enabled Human roles."
-        );
-    }
-
-    for (
-        let i = 0;
-        i < remaining;
-        i++
-    ) {
-
-        const chosen =
-            weightedPick(
-                pool,
-                HUMAN_WEIGHTS
-            );
-
-        roles.push(
-            chosen
-        );
-
-        pool =
-            pool.filter(
-                r =>
-                    r !== chosen
-            );
-    }
-
-    /*
-       Final shuffle.
-    */
-
-    roles =
-        shuffle(roles);
-    }
-
-    if (
-        roles.length !== count ||
-        new Set(roles).size !==
-        roles.length
-    ) {
-
-        throw new Error(
-            "Every starting role must be unique."
-        );
-    }
-
-    const hostileTotal =
-        roles.filter(
-            r =>
-                HOSTILES.includes(r)
-        ).length;
-
-    if (
-        hostileTotal !==
-        hostileCount
-    ) {
-
-        throw new Error(
-            `This setup requires exactly ${hostileCount} Hostile roles.`
-        );
-    }
-
-    if (
-        roles.filter(
-            r =>
-                r === "engineer"
-        ).length !== 1
-    ) {
-
-        throw new Error(
-            "Exactly one Engineer is required."
-        );
-    }
-
-    game.players.forEach(
-        (player, index) => {
-
-            player.role =
-                roles[index];
-
-            player.originalRole =
-                roles[index];
-
-            player.alive = true;
-
-            player.infectionRound =
-                null;
-
-            player.hasInfected =
-                false;
-        }
-    );
+    const roles = selectedStartingRoles();
+    game.players.forEach((player, index) => {
+        player.role = roles[index];
+        player.originalRole = roles[index];
+        player.alive = true;
+        player.infectionRound = null;
+        player.hasInfected = false;
+    });
 }
-
 
 /* =========================================================
    ONLINE PRIVATE MESSAGE HANDLER
@@ -9356,6 +8804,22 @@ function initGameUI() {
     if (!playerCount) return;
 
     ensureOnlineUI();
+    $("assignmentMode").onchange = event => {
+        setupMode = event.target.value;
+        game.randomRoles = {};
+        game.randomisedRoles = false;
+        $("roundComposition").disabled = setupMode === "manual";
+        $("assignmentHint").textContent = setupMode === "manual"
+            ? "Host eyes only. Choose every crew member’s role before passing the phone. Duplicate roles are allowed."
+            : "Roles stay secret. Mixed games have a 20% chance of an all-good red herring.";
+        renderSetup();
+    };
+    $("roundComposition").onchange = event => {
+        roundComposition = event.target.value;
+        game.randomRoles = {};
+        game.randomisedRoles = false;
+        renderSetup();
+    };
 
     playerCount.onchange =
         resetSetupPlayers;

@@ -13,6 +13,7 @@
   --shadow:0 14px 40px rgba(0,0,0,.35);
 }
 
+
 *{
   box-sizing:border-box;
 }
@@ -933,3 +934,33 @@ button.full{
     }
 
 }
+
+/* Mission console refresh: dark navy, electric blue and violet. */
+body{padding:32px 20px 60px;background:radial-gradient(ellipse at 10% 0%,#182740 0,transparent 48%),radial-gradient(ellipse at 95% 35%,#19132f 0,transparent 45%),#070a10;background-attachment:fixed}
+.app{width:min(900px,100%)}
+.masthead{display:flex;justify-content:space-between;align-items:center;padding:0 4px 24px;font-size:11px;letter-spacing:2px;font-weight:800}
+.brand-mark{color:#dae6ff}.ship-signal{color:var(--muted);font-size:9px}.ship-signal i{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 12px var(--green);margin-right:8px}
+.panel{border-color:#2a3549;border-radius:24px;padding:32px;background:linear-gradient(145deg,rgba(24,34,51,.96),rgba(12,17,28,.98));box-shadow:0 24px 80px #0006}
+.hero{position:relative;overflow:hidden;padding:42px 36px 30px}
+.hero h1{font-size:clamp(54px,12vw,92px);letter-spacing:12px;line-height:1.1;font-weight:900}.title-dot{color:#8a8aff}
+.orbit-mark{font-size:56px;color:#91a7ff;text-shadow:0 0 34px #747cff80;margin:4px 0 14px}
+.hero .subtitle{font-size:17px;line-height:1.6;letter-spacing:0;color:#c0ccdf;margin:14px 0 32px}
+.setup-list>label,.control-grid label{text-align:left;display:block;font-size:12px;color:#b4c1d5;font-weight:600}
+.setup-list>label{display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding:20px 0}.setup-list>label select{width:160px}
+.mission-controls{text-align:left;padding:22px;background:#090f1b80;border:1px solid var(--line);border-radius:16px}
+.section-heading{display:flex;justify-content:space-between;gap:12px;font-size:9px;letter-spacing:1.6px;color:#8da4c6;text-align:left;font-weight:800;margin-bottom:18px}.section-heading span:last-child{color:#64758d}
+.control-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.control-grid select{display:block;width:100%;margin-top:8px}
+.mission-controls p{font-size:12px;line-height:1.6;margin:14px 0 0}.mode-note{color:#8391a8}
+.crew-heading{margin:28px 0 12px}
+#playersSetup{display:grid;grid-template-columns:1fr 1fr;gap:12px;text-align:left}
+.setup-player{background:#0b111b80;border-radius:14px;padding:16px}.setup-player label+label{margin-top:12px}.setup-player label[hidden]{display:none}
+input,select{min-height:46px;border-color:#2e3c52;border-radius:10px;background:#0a101c}input:focus,select:focus{outline:2px solid #839aff;outline-offset:2px}
+button{min-height:46px;border-radius:10px;letter-spacing:.6px;font-size:12px}button:focus-visible{outline:2px solid #aabdff;outline-offset:4px}button.primary{background:linear-gradient(110deg,#397eef,#765fe3);box-shadow:0 6px 24px #4665e02b}
+.setup-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:24px}.setup-actions .full{grid-column:1/-1;padding:18px;margin-top:6px}.setup-actions button[hidden]{display:none}
+.validity{margin:16px 0;color:#9aafd0;font-size:11px;letter-spacing:.3px}
+.role-display{font-size:78px;margin:24px 0}.private-warning{padding:14px;border:1px solid #384368;border-radius:12px;background:#7687ea0b;color:#bbc7e5;font-size:13px;margin:20px 0}
+.round-info{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:22px 0}.info-card{border:1px solid var(--line);background:#0b111b;border-radius:14px;padding:18px}.info-card .label{font-size:11px;color:var(--muted)}.info-card .value{font-size:28px;color:#9fb8ff;font-weight:800;margin-top:8px}
+.result-box{background:#0a1019;border:1px solid var(--line);border-radius:14px;padding:18px;line-height:1.8}.result-title{font-size:30px;font-weight:900;margin:20px 0}
+.modal-content{width:min(760px,100%);margin:20px auto;background:#101722;border:1px solid #34415a;border-radius:22px;padding:28px;box-shadow:0 24px 100px #0009}
+@media(max-width:600px){body{padding:16px 12px 30px}.masthead{padding-bottom:16px}.ship-signal{letter-spacing:1px}.panel{padding:22px 18px;border-radius:20px}.hero{padding:28px 18px 20px}.hero h1{letter-spacing:8px}.hero .subtitle{font-size:15px;margin-bottom:24px}.mission-controls{padding:16px}.control-grid{grid-template-columns:1fr;gap:14px}.section-heading{font-size:8px;letter-spacing:1px}#playersSetup{grid-template-columns:1fr}.setup-player{padding:14px}.setup-actions{grid-template-columns:1fr 1fr}.setup-actions button:first-child{grid-column:1/-1}.modal-content{padding:18px;margin:8px auto}.role-display{font-size:64px}input,select{font-size:16px}.large-message{line-height:1.6}.choice-grid{gap:10px}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
