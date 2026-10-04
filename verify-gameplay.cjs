@@ -12,7 +12,7 @@ vm.runInContext(`
 function crew(roles) {
     game.mode='local';game.gameOver=false;game.round=1;game.stage=1;
     game.players=roles.map((role,i)=>({id:'p'+(i+1),name:'Player '+(i+1),role,originalRole:role,alive:true,infectionRound:null,hasInfected:false}));
-    game.systems={engines:true,o2:true,communications:true,power:true};game.displaySwap=null;
+    game.systems={engines:true,o2:true,communications:true,power:true};game.displaySwap=null;game.sabotagedAt={};
     resetTransient();game.previousActions={};
 }
 crew(['radio','alien','engineer','medic']);
@@ -65,5 +65,65 @@ const receive=hostReceiveAbility;hostReceiveAbility=()=>accepted++;
 handleHostPrivateRequest({type:'ability_action',action:{type:'radio'},round:1,turnId:'old'},'remote');assert.equal(accepted,0);
 handleHostPrivateRequest({type:'ability_action',action:{type:'radio'},round:1,turnId:'current'},'remote');assert.equal(accepted,1);
 hostReceiveAbility=receive;
+// A sabotage must survive its own round before an Engineer can repair it.
+crew(['saboteur','engineer','medic']);
+applyImmediateAction(game.players[0],{type:'sabotage',system:'engines'});
+assert.equal(game.sabotagedAt.engines,1);assert.equal(canRepairSystem('engines'),false);
+assert.equal(validateAction(game.players[1],{type:'repair',system:'engines'}),false);
+applyImmediateAction(game.players[1],{type:'repair',system:'engines'});assert.equal(game.systems.engines,false);
+game.round=2;assert.equal(validateAction(game.players[1],{type:'repair',system:'engines'}),true);
+assert.equal(validateAction(game.players[0],{type:'sabotage',system:'engines'}),false);
+applyImmediateAction(game.players[1],{type:'repair',system:'engines'});assert.equal(game.systems.engines,true);
+// Technician works during a blackout and powers someone else's actual ability.
+crew(['radio','technician','analyst','engineer']);game.systems.power=false;
+assert.equal(abilityOrder(['p1','p2','p3','p4'])[0],'p2');
+assert.equal(canAct(game.players[0]),false);assert.equal(canAct(game.players[1]),true);
+assert.equal(validateAction(game.players[1],{type:'backup',target:'p2'}),false);
+applyImmediateAction(game.players[1],{type:'backup',target:'p1'});
+assert.equal(canAct(game.players[0]),true);
+applyImmediateAction(game.players[0],{type:'radio'});assert.match(game.reactionInfo.p1,/^EARTH:/);
+game.blockedPlayers.add('p1');assert.equal(canAct(game.players[0]),false);
+game.round=2;resetTransient();assert.equal(canAct(game.players[0]),false);
+// Analyst copies results regardless of whether they choose before or after the source.
+for (const source of ['radio','detective','scientist']) {
+    crew(['analyst',source,'engineer','medic']);
+    game.actions.p1={type:'analyse',target:'p2'};
+    const sourceAction=source==='radio'?{type:'radio'}:source==='detective'?{type:'detect',target:'p3'}:{type:'science',target:'p3',mode:'check'};
+    game.actions.p2=sourceAction;applyImmediateAction(game.players[1],sourceAction);
+    resolveAnalystResults();assert.ok(game.reactionInfo.p1.includes(game.investigationResults.p2));
+    assert.equal(game.reactionInfo.p3,undefined);
+}
+crew(['analyst','medic']);game.actions.p1={type:'analyse',target:'p2'};resolveAnalystResults();assert.match(game.reactionInfo.p1,/no investigative result/);
+// Bounty is permanent; voted targets win, killed targets fail, dead hunters cannot win.
+crew(['bountyhunter','engineer','medic']);
+applyImmediateAction(game.players[0],{type:'bounty',target:'p2'});
+assert.equal(validateAction(game.players[0],{type:'bounty',target:'p3'}),false);
+completeEjection('p2',false);assert.equal($('gameOverTitle').textContent,'BOUNTY HUNTER WINS');
+crew(['bountyhunter','engineer','alien','medic']);applyImmediateAction(game.players[0],{type:'bounty',target:'p2'});
+game.actions.p3={type:'kill',target:'p2'};resolveAbilities();assert.equal(game.players[0].bountyFailed,true);assert.equal(game.gameOver,false);
+crew(['bountyhunter','engineer','medic']);game.players[0].bountyTarget='p2';game.players[0].alive=false;completeEjection('p2',false);assert.equal(game.gameOver,false);
+crew(['bountyhunter','engineer']);game.round=2;assert.equal(canAct(game.players[0]),false);
+crew(['bountyhunter','jester','engineer','medic']);applyImmediateAction(game.players[0],{type:'bounty',target:'p2'});completeEjection('p2',false);
+assert.equal($('gameOverTitle').textContent,'NEUTRAL OBJECTIVE VICTORY');assert.ok($('gameOverMessage').textContent.includes('Player 1'));assert.ok($('gameOverMessage').textContent.includes('Player 2'));
+// Oracle cannot farm only skips, double-score a vote, or win after being ejected.
+crew(['oracle','engineer','medic','guard','radio']);
+for (let round=1;round<=3;round++) {
+    game.round=round;resetTransient();game.oraclePredictions.p1='skip';
+    assert.equal(settleVoteObjectives(null),false);assert.equal(game.players[0].oracleCorrect,round);
+    assert.equal(settleVoteObjectives(null),false);assert.equal(game.players[0].oracleCorrect,round);
+}
+game.round=4;resetTransient();game.oraclePredictions.p1='p2';completeEjection('p2',true);assert.equal($('gameOverTitle').textContent,'ORACLE WINS');
+crew(['oracle','engineer','medic']);game.players[0].oracleCorrect=2;game.players[0].oraclePlayerCorrect=true;game.oraclePredictions.p1='p1';completeEjection('p1',false);assert.equal(game.gameOver,false);
+crew(['oracle','judge','engineer','medic']);game.oraclePredictions.p1='skip';showJudgePrompt('p3',false);$('judgeCancelButton').onclick();assert.equal(game.players[0].oracleCorrect,1);
+crew(['bountyhunter','oracle','engineer']);earthCheck();assert.equal($('gameOverTitle').textContent,'HUMAN VICTORY');
+crew(['bountyhunter','oracle']);earthCheck();assert.equal($('gameOverTitle').textContent,'VOYAGE COMPLETE');
+// Online payloads carry power grants, sabotage ages, and private objective progress.
+crew(['oracle','technician','engineer']);game.mode='online';online.isHost=true;online.playerId='p1';
+game.abilityQueue=['p1'];game.abilityIndex=0;game.backupPowered.add('p1');game.sabotagedAt.engines=1;game.players[0].oracleCorrect=2;
+let payload;const deliver=sendPrivateToPlayer;sendPrivateToPlayer=(id,data)=>{payload=data};onlineHostSendNextAbility();
+assert.equal(payload.backupPowered,true);assert.equal(payload.sabotagedAt.engines,1);assert.equal(payload.oracleCorrect,2);
+sendPrivateToPlayer=deliver;online.isHost=false;game.systems.power=false;payload.systems=game.systems;
+onlineShowPrivateAction(payload);assert.equal(canAct(game.players[0]),true);assert.equal(game.players[0].oracleCorrect,2);
 console.log('Passed: radio reaction delivery, truthful red herring hints, Silencer cooldown, immediate final-two Jester outcomes, independent Tricksters, swap expiry, host queue preservation, stale/duplicate turn rejection.');
+console.log('Passed: delayed Engineer repairs, blackout Technician support, private Analyst copies, Bounty Hunter outcomes, Oracle scoring, and online role-state synchronization.');
 `,ctx);

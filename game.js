@@ -146,7 +146,7 @@ const ROLE_DATA = {
         name: "Engineer",
         team: "Human",
         desc:
-            "Repair 1 offline ship system each round. Engineer can act even while Power is offline."
+            "Repair 1 offline ship system each round, starting the round after it was sabotaged. Engineer can act even while Power is offline."
     },
 
     scientist: {
@@ -237,6 +237,23 @@ const ROLE_DATA = {
             "Once per game, swap the displayed identities of two living players. The swap lasts through Reaction, Discussion and Voting, then ends. Win with the Neutral team by surviving the journey to Earth."
     },
 
+    bountyhunter: {
+        icon: "🎯", name: "Bounty Hunter", team: "Neutral",
+        desc: "Mark another player once, at the start of the game. Win if they are voted out while you are alive. A kill does not count; you cannot change your target."
+    },
+    oracle: {
+        icon: "🔮", name: "Oracle", team: "Neutral",
+        desc: "Before discussion, predict who will be ejected, or predict no ejection. Win with 3 correct predictions, including at least 1 player ejection. You must still be alive."
+    },
+    technician: {
+        icon: "🔋", name: "Technician", team: "Human",
+        desc: "Give another player backup power for this round, allowing their ability to work while Power is offline. You act before regular ability turns and can work during a blackout. Backup power does not bypass a Guard block."
+    },
+    analyst: {
+        icon: "📡", name: "Analyst", team: "Human",
+        desc: "Choose another player. Privately receive a copy of any Detective investigation, Scientist check, or Earth radio message they receive this round. You do not learn their role."
+    },
+
     infected: {
         icon: "🦠",
         name: "Infected",
@@ -273,13 +290,17 @@ const HUMANS = [
     "guard",
     "survivor",
     "radio",
-    "judge"
+    "judge",
+    "technician",
+    "analyst"
 ];
 
 const NEUTRALS = [
     "jester",
     "king",
-    "trickster"
+    "trickster",
+    "bountyhunter",
+    "oracle"
 ];
 
 const ALL_STARTING_ROLES = [
@@ -310,7 +331,9 @@ const HUMAN_WEIGHTS = {
     scientist: 10,
     radio: 10,
     captain: 7.5,
-    judge: 7.5
+    judge: 7.5,
+    technician: 10,
+    analyst: 10
 };
 
 
@@ -360,6 +383,11 @@ let game = {
 
     actions: {},
     previousActions: {},
+    sabotagedAt: {},
+    backupPowered: new Set(),
+    investigationResults: {},
+    oraclePredictions: {},
+    objectiveVoteRound: null,
 
     blockedPlayers: new Set(),
     protectedPlayers: new Set(),
@@ -498,6 +526,9 @@ function canAct(player) {
     if (player.role === "silencer" && player.lastSilenceRound != null && game.round < player.lastSilenceRound + 2) return false;
 
     if (player.role === "engineer") return true;
+    if (game.blockedPlayers.has(player.id)) return false;
+    if (player.role === "bountyhunter") return game.round === 1 && !player.bountyTarget && !player.bountyFailed;
+    if (player.role === "technician") return true;
 
     if (
         player.role === "infected" ||
@@ -509,7 +540,7 @@ function canAct(player) {
         return false;
     }
 
-    if (!game.systems.power) return false;
+    if (!game.systems.power && !game.backupPowered.has(player.id)) return false;
 
     if (game.blockedPlayers.has(player.id)) return false;
 
@@ -571,6 +602,10 @@ function targetOptions(actor = null, excludeId = null) {
 function resetTransient() {
 
     game.actions = {};
+    game.backupPowered = new Set();
+    game.investigationResults = {};
+    game.oraclePredictions = {};
+    game.objectiveVoteRound = null;
 
     game.blockedPlayers = new Set();
 
@@ -914,7 +949,8 @@ function startGame() {
 
     game.judgeUsed = false;
 
-    game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; });
+    game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; p.bountyTarget = null; p.bountyFailed = false; p.oracleCorrect = 0; p.oraclePlayerCorrect = false; p.lastOracleResult = null; });
+    game.sabotagedAt = {};
 
     game.displaySwap = null;
 
@@ -1023,9 +1059,7 @@ function startRound() {
             player => player.id
         );
 
-    game.abilityQueue = [
-        ...game.roundStartAliveIds
-    ];
+    game.abilityQueue = abilityOrder(game.roundStartAliveIds);
 
     game.abilityIndex = 0;
 
@@ -1230,6 +1264,13 @@ function showAction() {
 
     game.selectedAction = null;
 
+    if (player.role === "bountyhunter" && (player.bountyTarget || game.round > 1)) {
+        $("actionDescription").textContent = player.bountyTarget ? `Bounty: ${realName(player.bountyTarget)}. ${player.bountyFailed ? "Your target died without being voted out. Your bounty cannot be changed." : "Have them voted out while you remain alive."}` : "You did not mark a bounty in round 1. Your objective can no longer be completed.";
+        game.selectedAction = "none";
+        $("confirmActionButton").textContent = "CONTINUE";
+        $("confirmActionButton").onclick = completeAbility;
+        setScreen("actionScreen"); return;
+    }
     if (!canAct(player)) {
 
         if (player.role === "diseased") {
@@ -1287,7 +1328,11 @@ function showAction() {
        ALIEN
     */
 
-    if (player.role === "alien") {
+    if (player.role === "bountyhunter") renderTargetChoices(player, "bounty");
+    else if (player.role === "oracle") renderOracleChoices(player);
+    else if (player.role === "technician") renderTargetChoices(player, "backup");
+    else if (player.role === "analyst") renderTargetChoices(player, "analyse");
+    else if (player.role === "alien") {
 
         const saboteurAlive = online.connected && !online.isHost ? online.saboteurAlive : living().some(p => p.role === "saboteur");
 
@@ -1597,6 +1642,9 @@ function renderTargetChoices(
 ) {
 
     const descriptions = {
+        bounty: "Choose your bounty once. You win if they are voted out while you are alive; kills do not count.",
+        backup: "Choose another player to receive backup power for this round.",
+        analyse: "Choose another player whose investigative result you will receive privately.",
 
         kill:
             "Choose a player to kill.",
@@ -1622,7 +1670,7 @@ function renderTargetChoices(
         "Choose a player.";
 
     $("actionOptions").innerHTML =
-        targetOptions(player)
+        targetOptions(player, ["bounty", "backup", "analyse"].includes(action) ? player.id : null)
             .map(
                 option =>
                     button(
@@ -1664,6 +1712,70 @@ function renderTargetChoices(
    SYSTEM CHOICES
    ========================================================= */
 
+function canRepairSystem(system) {
+    return game.systems[system] === false && (game.sabotagedAt[system] == null || game.round > game.sabotagedAt[system]);
+}
+
+function abilityOrder(ids) {
+    // Support is granted before the recipient needs to use it.
+    const priority = id => ["technician", "bountyhunter"].includes(getPlayer(id)?.role) ? 0 : 1;
+    return [...ids].sort((a, b) => priority(a) - priority(b));
+}
+
+function privateInvestigation(player, message) {
+    game.investigationResults[player.id] = message;
+    game.reactionInfo[player.id] = message;
+}
+
+function resolveAnalystResults() {
+    for (const player of living().filter(p => p.role === "analyst")) {
+        const action = game.actions[player.id];
+        if (action?.type !== "analyse" || game.blockedPlayers.has(player.id)) continue;
+        const target = getPlayer(action.target);
+        const result = alive(target) && game.investigationResults[target.id];
+        const message = result ? `ANALYST: ${displayName(target.id)} received:\n${result}` : "ANALYST: Your chosen player received no investigative result this round.";
+        game.reactionInfo[player.id] = [game.reactionInfo[player.id], message].filter(Boolean).join("\n\n");
+    }
+}
+
+function settleVoteObjectives(ejectedId) {
+    if (game.objectiveVoteRound === game.round || game.gameOver) return false;
+    game.objectiveVoteRound = game.round;
+    const outcome = ejectedId || "skip";
+    const winners = [];
+    const ejected = getPlayer(ejectedId);
+    if (ejected?.role === "jester") winners.push(ejected);
+    for (const player of living()) {
+        if (player.role === "bountyhunter" && ejectedId && player.bountyTarget === ejectedId) winners.push(player);
+        if (player.role !== "oracle") continue;
+        const prediction = game.oraclePredictions[player.id];
+        if (!prediction) continue;
+        const correct = prediction === outcome;
+        if (correct) {
+            player.oracleCorrect = (player.oracleCorrect || 0) + 1;
+            if (outcome !== "skip") player.oraclePlayerCorrect = true;
+        }
+        player.lastOracleResult = {round: game.round, message: `ORACLE: ${correct ? "Correct prediction" : "Incorrect prediction"}. ${player.oracleCorrect || 0} / 3 correct; player ejection ${player.oraclePlayerCorrect ? "confirmed" : "still required"}.`};
+        if (player.oracleCorrect >= 3 && player.oraclePlayerCorrect) winners.push(player);
+    }
+    if (!winners.length) return false;
+    const title = winners.every(p => p.role === "bountyhunter") ? "BOUNTY HUNTER WINS" : winners.every(p => p.role === "oracle") ? "ORACLE WINS" : winners.every(p => p.role === "jester") ? "JESTER WINS" : "NEUTRAL OBJECTIVE VICTORY";
+    endGame(title, `${winners.map(p => p.name).join(", ")} completed their independent objectives.`);
+    return true;
+}
+
+function renderOracleChoices(player) {
+    $("actionDescription").textContent = `${player.lastOracleResult?.message || "Predict the final ejection after Captain and Judge decisions."} Progress: ${player.oracleCorrect || 0} / 3. At least one correct player ejection is required.`;
+    $("actionOptions").innerHTML = [...living().map(p => button(esc(displayName(p.id)), p.id)), button("NO EJECTION", "skip")].join("");
+    $("actionOptions").querySelectorAll("button").forEach(btn => {
+        btn.onclick = () => {
+            game.selectedAction = JSON.stringify({type: "predict", target: btn.dataset.value});
+            $("actionOptions").querySelectorAll("button").forEach(b => b.classList.remove("selected"));
+            btn.classList.add("selected");
+        };
+    });
+}
+
 function renderSystemChoices(
     engineer = false
 ) {
@@ -1673,15 +1785,15 @@ function renderSystemChoices(
             ? Object.keys(game.systems)
                 .filter(
                     system =>
-                        !game.systems[system]
+                        canRepairSystem(system)
                 )
-            : Object.keys(game.systems);
+            : Object.keys(game.systems).filter(system => game.systems[system]);
 
     if (!systems.length) {
 
         $("actionDescription").textContent =
             engineer
-                ? "There are no offline systems to repair."
+                ? Object.values(game.systems).some(value => !value) ? "Fresh sabotage cannot be repaired until next round." : "There are no offline systems to repair."
                 : "No systems available.";
 
         game.selectedAction =
@@ -1965,6 +2077,24 @@ function applyImmediateAction(
 
     if (!action || !action.type || !canAct(player)) return;
 
+    if (action.type === "bounty" && player.role === "bountyhunter" && !player.bountyTarget) {
+        if (action.target !== player.id && alive(getPlayer(action.target))) {
+            player.bountyTarget = action.target;
+            game.reactionInfo[player.id] = `BOUNTY: ${realName(action.target)} is your permanent target.`;
+        }
+        return;
+    }
+    if (action.type === "predict" && player.role === "oracle") {
+        game.oraclePredictions[player.id] = action.target;
+        game.reactionInfo[player.id] = "ORACLE: Your prediction is sealed until the vote resolves.";
+        return;
+    }
+    if (action.type === "backup" && player.role === "technician" && alive(getPlayer(action.target)) && action.target !== player.id) {
+        game.backupPowered.add(action.target);
+        game.reactionInfo[player.id] = `TECHNICIAN: Backup power supplied to ${displayName(action.target)} for this round.`;
+        return;
+    }
+    if (action.type === "analyse" && player.role === "analyst") return;
     /*
        ENGINEER
     */
@@ -1975,7 +2105,7 @@ function applyImmediateAction(
     ) {
 
         if (
-            game.systems[action.system] === false
+            canRepairSystem(action.system)
         ) {
 
 game.systems[action.system] =
@@ -2021,10 +2151,10 @@ game.reactionInfo[player.id] =
         }
 
         if (
-            game.systems[action.system] !==
-            undefined
+            game.systems[action.system] === true
         ) {
 
+           game.sabotagedAt[action.system] = game.round;
            game.systems[action.system] =
     false;
 
@@ -2197,8 +2327,7 @@ game.reactionInfo[player.id] =
                 status = "Healthy";
             }
 
-            game.reactionInfo[player.id] =
-                `SCIENCE: ${target.name} is ${status}.`;
+            privateInvestigation(player, `SCIENCE: ${target.name} is ${status}.`);
 
         } else if (
             action.mode === "cure"
@@ -2259,11 +2388,7 @@ game.reactionInfo[player.id] =
                 target.id
             ];
 
-        game.reactionInfo[player.id] =
-            detectiveMessage(
-                target,
-                previous
-            );
+        privateInvestigation(player, detectiveMessage(target, previous));
 
         return;
     }
@@ -2276,9 +2401,7 @@ game.reactionInfo[player.id] =
         action.type === "radio"
     ) {
 
-        game.reactionInfo[player.id] =
-            action.message ||
-            randomRadioMessage();
+        privateInvestigation(player, randomRadioMessage());
 
         return;
     }
@@ -2539,6 +2662,10 @@ function resolveAbilities() {
        phase still gets a Reaction result.
     */
 
+    for (const player of game.players) {
+        if (player.bountyTarget && !alive(getPlayer(player.bountyTarget))) player.bountyFailed = true;
+    }
+    resolveAnalystResults();
     if (checkFinalTwoJesterVictory()) return;
 
     game.reactionQueue =
@@ -3153,6 +3280,7 @@ function showJudgePrompt(
             game.judgeUsed = true;
 
             game.pendingJudge = false;
+            if (settleVoteObjectives(null)) return;
 
             $("voteResultTitle").textContent =
                 "EJECTION CANCELLED";
@@ -3273,8 +3401,6 @@ function completeEjection(
             $("voteResultMessage").textContent =
                 `${player.name} was voted out and wins as the Jester!`;
 
-            game.gameOver = true;
-
         } else {
 
             $("voteResultTitle").textContent =
@@ -3285,12 +3411,13 @@ function completeEjection(
         }
     }
 
+    if (!game.gameOver && settleVoteObjectives(id)) return;
     if (!game.gameOver && checkFinalTwoJesterVictory()) return;
     if (game.mode === "online" && online.isHost) {
         online.activeTurn = null;
         if (game.gameOver) { showGameOver(); return; }
         onlineBroadcast({type: "public_update", displaySwap: null, players: game.players.map(p => ({id: p.id, name: p.name, alive: p.alive}))});
-        for (const p of game.players.filter(p => p.id !== online.playerId)) sendPrivateToPlayer(p.id, {type: "private_result", title: $("voteResultTitle").textContent, message: $("voteResultMessage").textContent});
+        for (const p of game.players.filter(p => p.id !== online.playerId)) sendPrivateToPlayer(p.id, {type: "private_result", title: $("voteResultTitle").textContent, message: $("voteResultMessage").textContent, objectiveFeedback: p.lastOracleResult?.round === game.round ? p.lastOracleResult.message : ""});
     }
     $("afterVoteButton").onclick =
         afterVoting;
@@ -3500,10 +3627,7 @@ function earthCheck() {
         return;
     }
 
-    const neutrals =
-        living().filter(
-            isNeutral
-        );
+    const neutrals = living().filter(p => isNeutral(p) && !["bountyhunter", "oracle"].includes(p.role));
 
     if (neutrals.length) {
 
@@ -3515,6 +3639,10 @@ function earthCheck() {
         return;
     }
 
+    if (!living().some(isHuman)) {
+        endGame("VOYAGE COMPLETE", "The ship reached Earth, but no surviving player completed a winning objective.");
+        return;
+    }
     endGame(
         "HUMAN VICTORY",
         "The crew completed all 10 stages and reached Earth."
@@ -3549,6 +3677,7 @@ function checkVictory() {
     const startingTeams = new Set(game.players.map(p => roleTeam(p.originalRole)));
     if (startingTeams.size === 1) {
         const team = [...startingTeams][0];
+        if (alivePlayers.length === 1 && ["bountyhunter", "oracle"].includes(alivePlayers[0].role)) return false;
         if (team !== "Human" && alivePlayers.length <= 1) {
             endGame(team === "Hostile" ? "HOSTILE VICTORY" : "NEUTRAL VICTORY", alivePlayers.length ? `${alivePlayers[0].name} is the last player aboard.` : "Nobody survived the voyage.");
             return true;
@@ -3826,7 +3955,8 @@ function resetGameForNewLocalGame() {
 
     game.gameOver = false;
 
-    game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; });
+    game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; p.bountyTarget = null; p.bountyFailed = false; p.oracleCorrect = 0; p.oraclePlayerCorrect = false; p.lastOracleResult = null; });
+    game.sabotagedAt = {};
     game.displaySwap = null;
 
     game.judgeUsed = false;
@@ -3913,7 +4043,8 @@ function resetGameForOnlineLobby() {
 
     game.gameOver = false;
 
-    game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; });
+    game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; p.bountyTarget = null; p.bountyFailed = false; p.oracleCorrect = 0; p.oraclePlayerCorrect = false; p.lastOracleResult = null; });
+    game.sabotagedAt = {};
     game.displaySwap = null;
 
     game.judgeUsed = false;
@@ -5837,7 +5968,8 @@ if (
 
     game.judgeUsed = false;
 
-    game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; });
+    game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; p.bountyTarget = null; p.bountyFailed = false; p.oracleCorrect = 0; p.oraclePlayerCorrect = false; p.lastOracleResult = null; });
+    game.sabotagedAt = {};
 
     game.displaySwap = null;
 
@@ -6364,6 +6496,13 @@ function onlineShowPrivateAction(data = {}) {
     if (!online.isHost) {
         player.role = data.role || player.role;
         player.hasInfected = !!data.hasInfected;
+        player.bountyTarget = data.bountyTarget || null;
+        player.bountyFailed = !!data.bountyFailed;
+        player.oracleCorrect = data.oracleCorrect || 0;
+        player.oraclePlayerCorrect = !!data.oraclePlayerCorrect;
+        player.lastOracleResult = data.lastOracleResult || null;
+        game.backupPowered = new Set(data.backupPowered ? [player.id] : []);
+        game.sabotagedAt = data.sabotagedAt || {};
         player.lastSilenceRound = data.lastSilenceRound ?? null;
         player.tricksterUsed = !!data.tricksterUsed;
         game.systems = data.systems || game.systems;
@@ -6470,6 +6609,14 @@ function validateAction(
     }
 
     switch (player.role) {
+        case "bountyhunter":
+            return action.type === "bounty" && !player.bountyTarget && !player.bountyFailed && action.target !== player.id && alive(getPlayer(action.target));
+        case "oracle":
+            return action.type === "predict" && !game.oraclePredictions[player.id] && (action.target === "skip" || alive(getPlayer(action.target)));
+        case "technician":
+            return action.type === "backup" && action.target !== player.id && alive(getPlayer(action.target));
+        case "analyst":
+            return action.type === "analyse" && action.target !== player.id && alive(getPlayer(action.target));
 
         case "alien":
 
@@ -6515,10 +6662,7 @@ function validateAction(
             return (
                 action.type ===
                 "sabotage" &&
-                Object.prototype.hasOwnProperty.call(
-                    game.systems,
-                    action.system
-                )
+                game.systems[action.system] === true
             );
 
 
@@ -6560,9 +6704,7 @@ function validateAction(
             return (
                 action.type ===
                 "repair" &&
-                game.systems[
-                    action.system
-                ] === false
+                canRepairSystem(action.system)
             );
 
 
@@ -6782,6 +6924,13 @@ function onlineHostSendNextAbility() {
             lastSilenceRound: player.lastSilenceRound,
             tricksterUsed: !!player.tricksterUsed,
             hasInfected: player.hasInfected,
+            backupPowered: game.backupPowered.has(player.id),
+            sabotagedAt: game.sabotagedAt,
+            bountyTarget: player.bountyTarget,
+            bountyFailed: player.bountyFailed,
+            oracleCorrect: player.oracleCorrect,
+            oraclePlayerCorrect: player.oraclePlayerCorrect,
+            lastOracleResult: player.lastOracleResult,
             displaySwap: game.displaySwap,
             allyIds: isHostile(player) ? living().filter(isHostile).map(p => p.id) : [],
             saboteurAlive: living().some(p => p.role === "saboteur")
@@ -7517,6 +7666,7 @@ function hostReceiveJudgeChoice(
             "The Judge cancelled the ejection. Nobody was voted out."
         );
 
+        if (settleVoteObjectives(null)) return;
         afterVoting();
 
     } else {
@@ -7547,7 +7697,7 @@ function onlineShowPrivateResult(
         data.title;
 
     $("voteResultMessage").textContent =
-        data.message;
+        [data.message, data.objectiveFeedback].filter(Boolean).join("\n\n");
 
     $("afterVoteButton").onclick =
         () => {
@@ -7868,8 +8018,7 @@ game.previousActions = {
             p => p.id
         );
 
-    game.abilityQueue =
-        [...game.roundStartAliveIds];
+    game.abilityQueue = abilityOrder(game.roundStartAliveIds);
 
     game.abilityIndex = 0;
 
