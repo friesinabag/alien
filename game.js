@@ -26,68 +26,25 @@ let supabaseClient = null;
 let supabaseLoading = null;
 
 function loadSupabase() {
-    if (window.supabase) {
-        try {
-            supabaseClient = window.supabase.createClient(
-                SUPABASE_URL,
-                SUPABASE_KEY
-            );
-            return Promise.resolve(supabaseClient);
-        } catch (err) {
-            console.error("Supabase initialization error:", err);
-        }
-    }
-
+    if (supabaseClient) return Promise.resolve(supabaseClient);
     if (supabaseLoading) return supabaseLoading;
-
+    const initialise = () => {
+        supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        return supabaseClient;
+    };
+    if (window.supabase) return Promise.resolve(initialise());
     supabaseLoading = new Promise((resolve, reject) => {
-        const existing = document.querySelector(
-            'script[src*="supabase-js"]'
-        );
-
-        if (existing) {
-            existing.addEventListener("load", () => {
-                try {
-                    supabaseClient = window.supabase.createClient(
-                        SUPABASE_URL,
-                        SUPABASE_KEY
-                    );
-                    resolve(supabaseClient);
-                } catch (err) {
-                    reject(err);
-                }
-            });
-
-            existing.addEventListener("error", reject);
-            return;
-        }
-
         const script = document.createElement("script");
-        script.src =
-            "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
+        script.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
         script.async = true;
-
-        script.onload = () => {
-            try {
-                supabaseClient = window.supabase.createClient(
-                    SUPABASE_URL,
-                    SUPABASE_KEY
-                );
-                resolve(supabaseClient);
-            } catch (err) {
-                reject(err);
-            }
-        };
-
-        script.onerror = () =>
-            reject(new Error("Could not load Supabase."));
-
+        const timeout = setTimeout(() => fail(), 15000);
+        const fail = () => { clearTimeout(timeout); script.remove(); reject(new Error("Could not load the online library. Check your internet connection and retry.")); };
+        script.onload = () => { clearTimeout(timeout); try { resolve(initialise()); } catch (e) { reject(e); } };
+        script.onerror = fail;
         document.head.appendChild(script);
-    });
-
+    }).catch(error => { supabaseLoading = null; throw error; });
     return supabaseLoading;
 }
-
 
 /* =========================================================
    HELPERS
@@ -173,7 +130,7 @@ const ROLE_DATA = {
         name: "Silencer",
         team: "Hostile",
         desc:
-            "Silence 1 living player for 2 rounds. They cannot vote while silenced, but can still discuss and use their ability."
+            "Silence 1 living player for 2 rounds, then wait a round before using this ability again. They cannot vote while silenced, but can still discuss and use their ability."
     },
 
     parasite: {
@@ -261,7 +218,7 @@ const ROLE_DATA = {
         name: "Jester",
         team: "Neutral",
         desc:
-            "Win immediately if you are normally voted out."
+            "Win immediately if you are normally voted out. If you reach the final 2, the other player’s team wins instead."
     },
 
     king: {
@@ -276,9 +233,8 @@ const ROLE_DATA = {
         icon: "🎭",
         name: "Trickster",
         team: "Neutral",
-        concept: true,
         desc:
-            "Once per game, swap the displayed identities of two living players. The swap lasts through Reaction, Discussion and Voting, then ends."
+            "Once per game, swap the displayed identities of two living players. The swap lasts through Reaction, Discussion and Voting, then ends. Win with the Neutral team by surviving the journey to Earth."
     },
 
     infected: {
@@ -322,18 +278,14 @@ const HUMANS = [
 
 const NEUTRALS = [
     "jester",
-    "king"
-];
-
-const CONCEPTS = [
+    "king",
     "trickster"
 ];
 
 const ALL_STARTING_ROLES = [
     ...HOSTILES,
     ...HUMANS,
-    ...NEUTRALS,
-    ...CONCEPTS
+    ...NEUTRALS
 ];
 
 const HOSTILE_COUNTS = {
@@ -375,7 +327,7 @@ let settings = {
 };
 
 ALL_STARTING_ROLES.forEach(role => {
-    settings.enabled[role] = role !== "trickster";
+    settings.enabled[role] = true;
     settings.counts[role] = 0;
 });
 
@@ -430,7 +382,6 @@ let game = {
 
     gameOver: false,
 
-    tricksterUsed: false,
     displaySwap: null,
 
     judgeUsed: false,
@@ -544,6 +495,7 @@ function displayedPlayer(id) {
 function canAct(player) {
 
     if (!alive(player)) return false;
+    if (player.role === "silencer" && player.lastSilenceRound != null && game.round < player.lastSilenceRound + 2) return false;
 
     if (player.role === "engineer") return true;
 
@@ -582,6 +534,7 @@ function targetOptions(actor = null, excludeId = null) {
         .filter(p => {
 
             if (p.id === excludeId) return false;
+            if (online.connected && !online.isHost && actor?.id === online.playerId && roleTeam(actor) === "Hostile" && online.hostileAllyIds?.includes(p.id) && !game.displaySwap?.includes(p.id) && online.hostileAllyIds.length !== living().length) return false;
 
             /*
                Hostiles normally cannot target living Hostiles.
@@ -887,10 +840,10 @@ function generateRoles(count) {
     };
     const composition = roundComposition === "mixed" && Math.random() < 0.2 ? "good" : roundComposition;
     if (composition === "good") return shuffle(["engineer", ...pickMany(enabled(HUMANS.filter(r => r !== "engineer")), count - 1)]);
-    if (composition === "neutral") return pickMany(enabled([...NEUTRALS, ...CONCEPTS]), count);
+    if (composition === "neutral") return pickMany(enabled(NEUTRALS), count);
     if (composition === "evil") return pickMany(enabled(HOSTILES), count);
     const roles = [...pickMany(enabled(HOSTILES), HOSTILE_COUNTS[count]), "engineer"];
-    const neutrals = enabled([...NEUTRALS, ...CONCEPTS]);
+    const neutrals = enabled(NEUTRALS);
     if (roles.length < count && neutrals.length && Math.random() < 0.5) roles.push(rand(neutrals));
     return shuffle([...roles, ...pickMany(enabled(HUMANS.filter(r => r !== "engineer")), count - roles.length)]);
 }
@@ -961,7 +914,7 @@ function startGame() {
 
     game.judgeUsed = false;
 
-    game.tricksterUsed = false;
+    game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; });
 
     game.displaySwap = null;
 
@@ -1061,9 +1014,9 @@ function startRound() {
         ...game.actions
     };
 
-    progressInfections();
-
     resetTransient();
+
+    progressInfections();
 
     game.roundStartAliveIds =
         living().map(
@@ -1296,6 +1249,8 @@ function showAction() {
             $("actionDescription").textContent =
                 "You have no ability to use this round.";
 
+        } else if (player.role === "silencer" && player.lastSilenceRound != null && game.round < player.lastSilenceRound + 2) {
+            $("actionDescription").textContent = `Your silence is recharging. Available in round ${player.lastSilenceRound + 2}.`;
         } else if (
             game.blockedPlayers.has(player.id)
         ) {
@@ -1334,10 +1289,7 @@ function showAction() {
 
     if (player.role === "alien") {
 
-        const saboteurAlive =
-            living().some(
-                p => p.role === "saboteur"
-            );
+        const saboteurAlive = online.connected && !online.isHost ? online.saboteurAlive : living().some(p => p.role === "saboteur");
 
         $("actionDescription").textContent =
             saboteurAlive
@@ -1602,7 +1554,7 @@ function showAction() {
         player.role === "trickster"
     ) {
 
-        if (game.tricksterUsed) {
+        if (player.tricksterUsed) {
 
             $("actionDescription").textContent =
                 "You already used your Trickster swap.";
@@ -1964,78 +1916,25 @@ function renderSwapChoices(player) {
    COMPLETE ABILITY
    ========================================================= */
 
-function completeAbility() {
-
-    if (game.mode === "online") {
-
-        onlineCompleteAbility();
-
-        return;
+function normaliseAction(value) {
+    if (value === "radio") return {type: "radio"};
+    if (value === "none" || value == null) return {type: "none"};
+    if (typeof value === "string") {
+        try { return JSON.parse(value); } catch { return {type: "none"}; }
     }
-
-    const player =
-        getPlayer(
-            game.abilityQueue[
-                game.abilityIndex
-            ]
-        );
-
-    if (!player) {
-
-        advanceAbility();
-
-        return;
-    }
-
-    let action =
-        game.selectedAction;
-
-    if (
-        typeof action === "string" &&
-        action.startsWith("{")
-    ) {
-
-        try {
-            action = JSON.parse(action);
-        } catch {
-            action = "none";
-        }
-    }
-
-    if (
-        action &&
-        typeof action === "object"
-    ) {
-
-        game.actions[player.id] =
-            action;
-
-        applyImmediateAction(
-            player,
-            action
-        );
-
-    } else if (
-        action === "radio" &&
-        game.systems.communications
-    ) {
-
-        game.actions[player.id] = {
-            type: "radio",
-            message:
-                randomRadioMessage()
-        };
-
-    } else {
-
-        game.actions[player.id] = {
-            type: "none"
-        };
-    }
-
-    advanceAbility();
+    return value;
 }
 
+function completeAbility() {
+    if (game.mode === "online") { onlineCompleteAbility(); return; }
+    const player = getPlayer(game.abilityQueue[game.abilityIndex]);
+    if (!player) { advanceAbility(); return; }
+    const action = normaliseAction(game.selectedAction);
+    if (!validateAction(player, action)) { alert("Choose a valid action or target."); return; }
+    game.actions[player.id] = action;
+    applyImmediateAction(player, action);
+    advanceAbility();
+}
 
 function advanceAbility() {
 
@@ -2064,7 +1963,7 @@ function applyImmediateAction(
     action
 ) {
 
-    if (!action || !action.type) return;
+    if (!action || !action.type || !canAct(player)) return;
 
     /*
        ENGINEER
@@ -2185,8 +2084,8 @@ game.reactionInfo[player.id] =
         action.type === "silence"
     ) {
 
-        if (getPlayer(action.target)) {
-
+        if (player.role === "silencer" && alive(getPlayer(action.target))) {
+            player.lastSilenceRound = game.round;
             game.silencedUntil[
                 action.target
             ] =
@@ -2394,7 +2293,7 @@ game.reactionInfo[player.id] =
 
         if (
             player.role !== "trickster" ||
-            game.tricksterUsed
+            player.tricksterUsed
         ) {
             return;
         }
@@ -2420,7 +2319,8 @@ game.reactionInfo[player.id] =
             b.id
         ];
 
-        game.tricksterUsed = true;
+        player.tricksterUsed = true;
+        game.reactionInfo[player.id] = "TRICKSTER: Your identity swap is active through voting.";
 
         return;
     }
@@ -2520,38 +2420,24 @@ function detectiveMessage(
    ========================================================= */
 
 function randomRadioMessage() {
-
-    const hostiles =
-        living().filter(
-            isHostile
-        ).length;
-
-    const names =
-        living()
-            .sort(() => Math.random() - 0.5)
-            .slice(0, 3)
-            .map(p => p.name);
-
+    const crew = living();
+    const hostiles = crew.filter(isHostile);
     const messages = [
-
-        `EARTH: There are exactly ${hostiles} hostiles remaining.`,
-
-        names.length >= 3
-            ? `EARTH: ${names[0]}, ${names[1]}, ${names[2]} — one of them is hostile.`
-            : `EARTH: There are ${hostiles} hostile players remaining.`,
-
-        names.length >= 3
-            ? `EARTH: ${names[0]}, ${names[1]}, ${names[2]} — one of them made a recent ship-system interaction.`
-            : `EARTH: Be careful. Hostile activity has been detected.`,
-
-        game.systems.communications
-            ? "EARTH: Communications link is currently stable."
-            : "EARTH: Communications signal is failing."
+        `EARTH: There are exactly ${hostiles.length} hostile players remaining.`,
+        `EARTH: ${crew.length} crew members are still alive.`,
+        `EARTH: Engines are ${game.systems.engines ? "online" : "offline"}. Current flight stage: ${game.stage} / 10.`,
+        "EARTH: Communications link is currently stable."
     ];
-
+    // These hints must remain true in red herring games too.
+    if (hostiles.length && crew.length >= 3) {
+        const suspect = rand(hostiles);
+        const names = shuffle([suspect, ...shuffle(crew.filter(p => p.id !== suspect.id)).slice(0, 2)]).map(p => displayName(p.id));
+        messages.push(`EARTH: ${names.join(", ")} — at least one is hostile.`);
+    }
+    const interaction = crew.filter(p => ["repair", "sabotage"].includes(game.previousActions[p.id]?.type));
+    if (interaction.length) messages.push(`EARTH: ${displayName(rand(interaction).id)} interacted with a ship system last round.`);
     return rand(messages);
 }
-
 
 /* =========================================================
    RESOLVE ABILITIES
@@ -2619,7 +2505,8 @@ function resolveAbilities() {
 
         if (
             isHostile(target) &&
-            isHostile(actor)
+            isHostile(actor) &&
+            !game.players.every(p => roleTeam(p.originalRole) === "Hostile")
         ) {
 
             if (
@@ -2640,7 +2527,7 @@ function resolveAbilities() {
             "You were eliminated this round.";
 
         game.lastRoundResults.push(
-            `${target.name} was eliminated.`
+            `${displayName(target.id)} was eliminated.`
         );
     }
 
@@ -2652,12 +2539,14 @@ function resolveAbilities() {
        phase still gets a Reaction result.
     */
 
+    if (checkFinalTwoJesterVictory()) return;
+
     game.reactionQueue =
         [...game.roundStartAliveIds];
 
     game.reactionIndex = 0;
 
-    showReactionPass();
+    if (game.mode !== "online") showReactionPass();
 }
 
 
@@ -3251,6 +3140,10 @@ function showJudgePrompt(
 
     game.pendingJudge = true;
 
+    if (game.mode === "online" && online.isHost) {
+        sendPrivateToPlayer(judge.id, {type: "private_judge", target: ejectionId, targetName: displayName(ejectionId)});
+        return;
+    }
     $("judgeDescription").textContent =
         `The vote would eject ${displayName(ejectionId)}. Do you want to cancel the ejection?`;
 
@@ -3350,6 +3243,7 @@ function completeEjection(
     byCaptain
 ) {
 
+    const ejectedName = id ? displayName(id) : "";
     game.displaySwap = null;
 
     if (!id) {
@@ -3387,10 +3281,17 @@ function completeEjection(
                 "PLAYER VOTED OUT";
 
             $("voteResultMessage").textContent =
-                `${player.name} was voted out.`;
+                `${ejectedName} was voted out.`;
         }
     }
 
+    if (!game.gameOver && checkFinalTwoJesterVictory()) return;
+    if (game.mode === "online" && online.isHost) {
+        online.activeTurn = null;
+        if (game.gameOver) { showGameOver(); return; }
+        onlineBroadcast({type: "public_update", displaySwap: null, players: game.players.map(p => ({id: p.id, name: p.name, alive: p.alive}))});
+        for (const p of game.players.filter(p => p.id !== online.playerId)) sendPrivateToPlayer(p.id, {type: "private_result", title: $("voteResultTitle").textContent, message: $("voteResultMessage").textContent});
+    }
     $("afterVoteButton").onclick =
         afterVoting;
 
@@ -3625,8 +3526,24 @@ function earthCheck() {
    VICTORY CHECK
    ========================================================= */
 
+function checkFinalTwoJesterVictory() {
+    if (game.gameOver) return false;
+    const alivePlayers = living();
+    if (alivePlayers.length === 2) {
+        const jester = alivePlayers.find(p => p.role === "jester");
+        const other = alivePlayers.find(p => p.role !== "jester");
+        if (jester && other) {
+            const team = roleTeam(other);
+            endGame(team === "Human" ? "HUMAN VICTORY" : team === "Hostile" ? "HOSTILE VICTORY" : "NEUTRAL VICTORY", `${other.name} reached the final 2 with the Jester. ${team} team wins.`);
+            return true;
+        }
+    }
+    return false;
+}
+
 function checkVictory() {
     if (game.gameOver) return true;
+    if (checkFinalTwoJesterVictory()) return true;
 
     const alivePlayers = living();
     const startingTeams = new Set(game.players.map(p => roleTeam(p.originalRole)));
@@ -3695,7 +3612,6 @@ function checkVictory() {
     */
 
     if (
-        game.mode === "local" &&
         hostiles === 0 &&
         neutrals === 0
     ) {
@@ -3910,7 +3826,7 @@ function resetGameForNewLocalGame() {
 
     game.gameOver = false;
 
-    game.tricksterUsed = false;
+    game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; });
     game.displaySwap = null;
 
     game.judgeUsed = false;
@@ -3932,6 +3848,8 @@ function resetGameForNewLocalGame() {
     game.randomisedRoles = false;
     game.randomRoles = {};
 
+    initGameUI();
+    $("startVotingButton").hidden = false;
     renderSetup();
     setScreen("setupScreen");
 }
@@ -3944,6 +3862,8 @@ function resetGameForOnlineLobby() {
     */
 
     game.mode = "online";
+    online.started = false;
+    online.activeTurn = null;
 
     const roomPlayers = Object.values(online.players)
         .filter(player => player.connected)
@@ -3993,7 +3913,7 @@ function resetGameForOnlineLobby() {
 
     game.gameOver = false;
 
-    game.tricksterUsed = false;
+    game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; });
     game.displaySwap = null;
 
     game.judgeUsed = false;
@@ -4137,11 +4057,6 @@ function renderRoleGuide() {
                 "diseased",
                 "parasite"
             ]
-        ],
-
-        [
-            "ROLE CONCEPT",
-            CONCEPTS
         ]
     ];
 
@@ -4218,8 +4133,7 @@ function renderCustomRoles() {
     const groups = [
         ["HOSTILE", HOSTILES],
         ["HUMAN", HUMANS],
-        ["NEUTRAL", NEUTRALS],
-        ["ROLE CONCEPT", CONCEPTS]
+        ["NEUTRAL", NEUTRALS]
     ];
 
     $("customRoleContent").innerHTML =
@@ -4666,15 +4580,14 @@ function ensureOnlineUI() {
                 "📱 Local mode selected."
             );
 
-            renderSetup();
+            resetGameForNewLocalGame();
+            updateOnlineSetupUI();
         };
 
     $("onlineModeButton").onclick =
     async () => {
 
         game.mode = "online";
-
-        await loadSupabase();
 
         updateOnlineStatus(
             "🌐 Online mode selected.\nCreate a room or join a room."
@@ -5056,6 +4969,9 @@ online.name = name;
             resetSetupPlayers();
         }
 
+        game.players = [{id: "p1", name: online.name, role: "survivor", originalRole: "survivor", alive: true, infectionRound: null, hasInfected: false}];
+        game.randomisedRoles = false;
+        game.randomRoles = {};
         online.players = {};
 
         online.players[
@@ -5091,6 +5007,8 @@ updateOnlineSetupUI();
 
     } catch (error) {
 
+        onlineDisconnect();
+        updateOnlineSetupUI();
         console.error(error);
 
         updateOnlineStatus(
@@ -5168,6 +5086,7 @@ online.name = name;
         online.connected = true;
 
         await subscribePublicRoom();
+        await createClientPrivateChannel();
 
        updateOnlineSetupUI();
 
@@ -5179,6 +5098,7 @@ online.name = name;
            Tell host we joined.
         */
 
+        online.joinTimer = setTimeout(() => { if (!online.playerId) { onlineDisconnect(); updateOnlineStatus("No host answered. Check the room code."); updateOnlineSetupUI(); } }, 12000);
         onlineBroadcast({
             type: "join_request",
 
@@ -5194,6 +5114,8 @@ online.name = name;
 
     } catch (error) {
 
+        onlineDisconnect();
+        updateOnlineSetupUI();
         console.error(error);
 
         updateOnlineStatus(
@@ -5207,103 +5129,34 @@ online.name = name;
    PUBLIC ROOM CHANNEL
    ========================================================= */
 
-async function subscribePublicRoom() {
-
-    if (!supabaseClient) {
-        throw new Error(
-            "Supabase is not available."
-        );
-    }
-
-    const channelName =
-        `alien-room-${online.roomCode}`;
-
-    online.channel =
-        supabaseClient.channel(
-            channelName,
-            {
-                config: {
-                    broadcast: {
-                        self: false
-                    }
-                }
+function subscribeChannel(channel) {
+    return new Promise((resolve, reject) => {
+        let done = false;
+        const fail = status => {
+            if (done) return;
+            done = true;
+            clearTimeout(timeout);
+            supabaseClient.removeChannel(channel);
+            reject(new Error(`Online connection failed (${status}). Check that the Supabase project is active, its URL and publishable key are correct, and your network allows WebSockets.`));
+        };
+        const timeout = setTimeout(() => fail("timeout"), 15000);
+        channel.subscribe(status => {
+            if (status === "SUBSCRIBED" && !done) { done = true; clearTimeout(timeout); resolve(channel); }
+            else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
+                if (!done) fail(status);
+                else if (online.connected) updateOnlineStatus("Connection interrupted. Reconnecting… If it does not recover, leave and rejoin the room.");
             }
-        );
-
-    online.channel.on(
-        "broadcast",
-        {
-            event: "alien"
-        },
-        payload => {
-
-            const data =
-                payload.payload;
-
-            handleOnlinePublicMessage(
-                data
-            );
-        }
-    );
-
-    await new Promise(
-        (resolve, reject) => {
-
-            let finished = false;
-
-            online.channel
-                .subscribe(status => {
-
-                    console.log(
-                        "Supabase:",
-                        status
-                    );
-
-                    if (
-                        status ===
-                        "SUBSCRIBED" &&
-                        !finished
-                    ) {
-
-                        finished = true;
-
-                        resolve();
-                    }
-
-                    if (
-                        status ===
-                        "CHANNEL_ERROR" &&
-                        !finished
-                    ) {
-
-                        finished = true;
-
-                        reject(
-                            new Error(
-                                "Supabase channel error."
-                            )
-                        );
-                    }
-
-                    if (
-                        status ===
-                        "TIMED_OUT" &&
-                        !finished
-                    ) {
-
-                        finished = true;
-
-                        reject(
-                            new Error(
-                                "Supabase connection timed out."
-                            )
-                        );
-                    }
-                });
-        }
-    );
+        });
+    });
 }
 
+async function subscribePublicRoom() {
+    if (!supabaseClient) throw new Error("Supabase is not available.");
+    const channel = supabaseClient.channel(`alien-room-${online.roomCode}`, {config: {broadcast: {self: false, ack: true}}});
+    channel.on("broadcast", {event: "alien"}, payload => handleOnlinePublicMessage(payload.payload));
+    online.channel = channel;
+    await subscribeChannel(channel);
+}
 
 /* =========================================================
    ONLINE PUBLIC BROADCAST
@@ -5330,165 +5183,41 @@ function onlineBroadcast(data) {
    ONLINE PRIVATE CHANNEL
    ========================================================= */
 
-async function createPrivateChannel(
-    connectionId
-) {
-
-    if (!supabaseClient) {
-        throw new Error(
-            "Supabase unavailable."
-        );
-    }
-
-    const name =
-        `alien-private-${online.roomCode}-${connectionId}`;
-
-    const channel =
-        supabaseClient.channel(
-            name,
-            {
-                config: {
-                    broadcast: {
-                        self: false
-                    }
-                }
-            }
-        );
-
-    channel.on(
-        "broadcast",
-        {
-            event: "private"
-        },
-        payload => {
-
-            const data =
-                payload.payload;
-
-            handleOnlinePrivateMessage(
-                data,
-                connectionId
-            );
-        }
-    );
-
-    await new Promise(
-        (resolve, reject) => {
-
-            let done = false;
-
-            channel.subscribe(
-                status => {
-
-                    if (
-                        status ===
-                        "SUBSCRIBED" &&
-                        !done
-                    ) {
-
-                        done = true;
-
-                        resolve();
-                    }
-
-                    if (
-                        (
-                            status ===
-                            "CHANNEL_ERROR" ||
-                            status ===
-                            "TIMED_OUT"
-                        ) &&
-                        !done
-                    ) {
-
-                        done = true;
-
-                        reject(
-                            new Error(
-                                `Private channel error: ${status}`
-                            )
-                        );
-                    }
-                }
-            );
-        }
-    );
-
-    return channel;
+async function createPrivateChannel(connectionId) {
+    if (!supabaseClient) throw new Error("Supabase is not available.");
+    const channel = supabaseClient.channel(`alien-private-${online.roomCode}-${connectionId}`, {config: {broadcast: {self: false, ack: true}}});
+    channel.on("broadcast", {event: "private"}, payload => handleOnlinePrivateMessage(payload.payload, connectionId));
+    return subscribeChannel(channel);
 }
-
 
 /* =========================================================
    SEND PRIVATE
    ========================================================= */
 
-async function sendPrivate(
-    connectionId,
-    data
-) {
-
-    let channel =
-        online.hostPrivateChannels[
-            connectionId
-        ];
-
-    if (!channel) {
-
-        try {
-
-            channel =
-                await createPrivateChannel(
-                    connectionId
-                );
-
-            online.hostPrivateChannels[
-                connectionId
-            ] = channel;
-
-        } catch (error) {
-
-            console.error(
-                "Private channel error:",
-                error
-            );
-
-            return;
-        }
+async function sendPrivate(connectionId, data) {
+    if (online.isHost && connectionId === online.connectionId) {
+        receivePrivateGameData(data);
+        return;
     }
-
-    channel.send({
-        type: "broadcast",
-        event: "private",
-        payload: data
-    });
+    let channel = online.hostPrivateChannels[connectionId];
+    if (!channel) {
+        const pending = online.privateChannelPromises ||= {};
+        pending[connectionId] ||= createPrivateChannel(connectionId).then(c => online.hostPrivateChannels[connectionId] = c).finally(() => delete pending[connectionId]);
+        channel = await pending[connectionId];
+    }
+    const status = await channel.send({type: "broadcast", event: "private", payload: data});
+    if (status !== "ok") updateOnlineStatus("A private message could not be delivered. Check the room connection.");
 }
-
 
 /* =========================================================
    ONLINE PRIVATE SEND FROM CLIENT
    ========================================================= */
 
-function sendPrivateToHost(
-    data
-) {
-
-    if (
-        !online.privateChannel
-    ) {
-        return;
-    }
-
-    online.privateChannel.send({
-        type: "broadcast",
-        event: "private",
-        payload: {
-            ...data,
-            connectionId:
-                online.connectionId
-        }
-    });
+function sendPrivateToHost(data) {
+    const payload = {...data, round: game.round, turnId: online.turnId, connectionId: online.connectionId};
+    if (online.isHost) { handleHostPrivateRequest(payload, online.connectionId); return; }
+    if (online.privateChannel) online.privateChannel.send({type: "broadcast", event: "private", payload});
 }
-
 
 /* =========================================================
    JOIN REQUEST HANDLING
@@ -5499,6 +5228,7 @@ async function handleJoinRequest(
 ) {
 
     if (!online.isHost) return;
+    if (online.started) { await sendPrivate(data.connectionId, {type: "join_denied", reason: "The game has already started."}); return; }
 
     if (
         !data.connectionId
@@ -5667,6 +5397,9 @@ async function handleJoinRequest(
 
     broadcastRoomState();
 
+    game.randomisedRoles = false;
+    game.randomRoles = {};
+    updateOnlineSetupUI();
     updateOnlinePlayersUI();
 }
 
@@ -5679,11 +5412,23 @@ function handleLeaveRequest(
         return;
     }
 
+    const connection = online.players[data.connectionId];
+    if (online.started) {
+        updateOnlineStatus(`${connection?.name || "A player"} left during the game. Return to the lobby to start again.`);
+        hostReturnEveryoneToLobby();
+    }
+    const channel = online.hostPrivateChannels[data.connectionId];
+    if (channel) supabaseClient.removeChannel(channel);
+    delete online.hostPrivateChannels[data.connectionId];
+    game.players = game.players.filter(p => p.id !== connection?.playerId);
+    game.randomisedRoles = false;
+    game.randomRoles = {};
     delete online.players[
         data.connectionId
     ];
 
     broadcastRoomState();
+    updateOnlineSetupUI();
     updateOnlinePlayersUI();
 }
 
@@ -5793,7 +5538,8 @@ function handleOnlinePublicMessage(
                    Keep local hostless representation.
                 */
 
-                data.players.forEach(
+                game.players = game.players.filter(p => (data.players || []).some(x => x.playerId === p.id));
+                (data.players || []).forEach(
                     p => {
 
                         const existing =
@@ -5927,6 +5673,8 @@ function handleOnlineGameStart(
 ) {
 
     game.mode = "online";
+    online.started = true;
+    game.gameOver = false;
 
     game.round =
         data.round || 1;
@@ -6051,6 +5799,7 @@ if (
        Generate roles using the same role system.
     */
 
+    online.started = true;
     const oldMode =
         game.mode;
 
@@ -6068,7 +5817,7 @@ if (
     } catch (error) {
 
         game.mode = oldMode;
-
+        online.started = false;
         alert(
             error.message
         );
@@ -6088,7 +5837,7 @@ if (
 
     game.judgeUsed = false;
 
-    game.tricksterUsed = false;
+    game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; });
 
     game.displaySwap = null;
 
@@ -6150,8 +5899,8 @@ resetTransient();
 
         if (!player) continue;
 
-        await sendPrivate(
-            connection.connectionId,
+        await sendPrivateToPlayer(
+            player.id,
             {
                 type:
                     "private_role",
@@ -6165,8 +5914,8 @@ resetTransient();
                 originalRole:
                     player.originalRole,
 
-                round:
-                    game.round
+                allies: isHostile(player) ? living().filter(p => p.id !== player.id && isHostile(p)).map(p => ({id: p.id, name: p.name})) : [],
+                round: game.round
             }
         );
     }
@@ -6217,6 +5966,14 @@ function handleOnlinePrivateMessage(
         return;
     }
 
+    receivePrivateGameData(data);
+}
+
+function receivePrivateGameData(data) {
+    if (game.gameOver && data.type.startsWith("private_")) return;
+    if (data.round) game.round = data.round;
+    if (data.stage) game.stage = data.stage;
+    if (data.turnId) online.turnId = data.turnId;
     /*
        CLIENT receives private data.
     */
@@ -6235,17 +5992,18 @@ function handleOnlinePrivateMessage(
                 `Joined room ${data.roomCode} as ${data.playerId}.`
             );
 
-            createClientPrivateChannel();
+            clearTimeout(online.joinTimer);
+            online.joinTimer = null;
+            updateOnlineSetupUI();
 
             break;
 
 
         case "join_denied":
 
-            alert(
-                data.reason ||
-                "Could not join room."
-            );
+            onlineDisconnect();
+            updateOnlineSetupUI();
+            updateOnlineStatus(data.reason || "Could not join room.");
 
             break;
 
@@ -6350,32 +6108,9 @@ function handleOnlinePrivateMessage(
    ========================================================= */
 
 async function createClientPrivateChannel() {
-
-    if (!online.connectionId) {
-        return;
-    }
-
-    try {
-
-        online.privateChannel =
-            await createPrivateChannel(
-                online.connectionId
-            );
-
-        updateOnlineStatus(
-            `Connected.\nYou are ${online.playerId}.`
-        );
-
-    } catch (error) {
-
-        console.error(error);
-
-        updateOnlineStatus(
-            `Private connection failed.\n${error.message}`
-        );
-    }
+    if (online.privateChannel) return;
+    online.privateChannel = await createPrivateChannel(online.connectionId);
 }
-
 
 /* =========================================================
    HOST PRIVATE REQUEST HANDLER
@@ -6400,6 +6135,11 @@ function handleHostPrivateRequest(
 
     if (!player) return;
 
+    const prompts = {ability_action: "private_action", reaction_ready: "private_reaction", vote: "private_vote", captain_choice: "private_captain", judge_choice: "private_judge"};
+    if (prompts[data.type]) {
+        const turn = online.activeTurn;
+        if (!turn || turn.playerId !== player.id || turn.type !== prompts[data.type] || turn.id !== data.turnId || data.round !== game.round) return;
+    } else return;
     switch (data.type) {
 
         case "ability_action":
@@ -6480,24 +6220,18 @@ function connectionForPlayer(
 }
 
 
-async function sendPrivateToPlayer(
-    playerId,
-    data
-) {
-
-    const connection =
-        connectionForPlayer(
-            playerId
-        );
-
+async function sendPrivateToPlayer(playerId, data) {
+    const connection = connectionForPlayer(playerId);
     if (!connection) return;
-
-    await sendPrivate(
-        connection.connectionId,
-        data
-    );
+    const turnTypes = ["private_action", "private_reaction", "private_vote", "private_captain", "private_judge"];
+    const payload = {...data, round: game.round, stage: game.stage};
+    if (turnTypes.includes(data.type)) {
+        online.turnSequence = (online.turnSequence || 0) + 1;
+        payload.turnId = `${data.type}:${game.round}:${playerId}:${online.turnSequence}`;
+        online.activeTurn = {id: payload.turnId, playerId, type: data.type};
+    }
+    await sendPrivate(connection.connectionId, payload);
 }
-
 
 /* =========================================================
    ONLINE HOST ROUND
@@ -6589,12 +6323,12 @@ function onlineApplyPrivateRole(
                         HOSTILE ALLIES
                     </strong>
                     <br>
-                    Other Hostile players are hidden
-                    until the host sends the private roster.
+                    ${(data.allies || []).map(p => esc(p.name)).join(", ") || "You are the only Hostile."}
                 </div>
             `;
     }
 
+    $("showActionButton").onclick = () => onlineShowWaiting("Waiting for your ability turn…");
     setScreen(
         "roleScreen"
     );
@@ -6624,101 +6358,45 @@ function onlineShowPrivateRole() {
    ONLINE PRIVATE ACTION
    ========================================================= */
 
-function onlineShowPrivateAction(
-    data = null
-) {
-
-    const player =
-        getPlayer(
-            online.playerId
-        );
-
+function onlineShowPrivateAction(data = {}) {
+    const player = getPlayer(online.playerId);
     if (!player) return;
-
-    $("actionTitle").textContent =
-        `${roleData(player.role).icon} ${roleData(player.role).name}`;
-
-    $("actionOptions").innerHTML =
-        "";
-
-    $("actionDescription").textContent =
-        "Choose your action.";
-
-    /*
-       For online mode, create a lightweight
-       private action UI.
-    */
-
-    const fakeLocalMode =
-        game.mode;
-
-    /*
-       Temporarily use the normal action renderer.
-       It only operates on this player.
-    */
-
-    game.abilityQueue = [
-        player.id
-    ];
-
-    game.abilityIndex = 0;
-
-    game.mode = "local";
-
-    showAction();
-
-    game.mode =
-        fakeLocalMode;
-
-    $("confirmActionButton").onclick =
-        onlineCompleteAbility;
-
-    setScreen(
-        "actionScreen"
-    );
+    if (!online.isHost) {
+        player.role = data.role || player.role;
+        player.hasInfected = !!data.hasInfected;
+        player.lastSilenceRound = data.lastSilenceRound ?? null;
+        player.tricksterUsed = !!data.tricksterUsed;
+        game.systems = data.systems || game.systems;
+        game.displaySwap = data.displaySwap || null;
+        game.blockedPlayers = new Set(data.blocked ? [player.id] : []);
+        online.hostileAllyIds = data.allyIds || [];
+        online.saboteurAlive = !!data.saboteurAlive;
+    }
+    const previous = {mode: game.mode, queue: game.abilityQueue, index: game.abilityIndex};
+    try {
+        game.mode = "local";
+        game.abilityQueue = [player.id];
+        game.abilityIndex = 0;
+        showAction();
+    } finally {
+        game.mode = previous.mode;
+        game.abilityQueue = previous.queue;
+        game.abilityIndex = previous.index;
+    }
+    $("confirmActionButton").onclick = onlineCompleteAbility;
 }
 
+function onlineShowWaiting(message) {
+    $("onlineWaitingMessage").textContent = message;
+    setScreen("onlineWaitingScreen");
+}
 
 function onlineCompleteAbility() {
-
-    const player =
-        getPlayer(
-            online.playerId
-        );
-
-    if (!player) return;
-
-    let action =
-        game.selectedAction;
-
-    if (
-        action &&
-        typeof action === "string" &&
-        action.startsWith("{")
-    ) {
-
-        try {
-            action = JSON.parse(action);
-        } catch {
-            action = "none";
-        }
-    }
-
-    if (!action) {
-
-        action = {
-            type: "none"
-        };
-    }
-
-    sendPrivateToHost({
-        type:
-            "ability_action",
-
-        action
-    });
+    const action = normaliseAction(game.selectedAction);
+    if (!game.selectedAction && canAct(getPlayer(online.playerId))) { alert("Choose an action first."); return; }
+    onlineShowWaiting("Action submitted. Waiting for the crew…");
+    sendPrivateToHost({type: "ability_action", action});
 }
-
 
 /* =========================================================
    HOST ABILITY RECEIVE
@@ -6737,6 +6415,8 @@ function hostReceiveAbility(
        to be another role.
     */
 
+    if (game.abilityQueue[game.abilityIndex] !== player.id || game.actions[player.id]) return;
+    action = normaliseAction(action);
     const valid =
         validateAction(
             player,
@@ -6745,23 +6425,13 @@ function hostReceiveAbility(
 
     if (!valid) {
 
-        sendPrivateToPlayer(
-            player.id,
-            {
-                type:
-                    "private_result",
-
-                title:
-                    "ACTION REJECTED",
-
-                message:
-                    "That action is not valid."
-            }
-        );
+        updateOnlineStatus("An invalid action was rejected. The player can choose again.");
+        onlineHostSendNextAbility();
 
         return;
     }
 
+    online.activeTurn = null;
     game.actions[
         player.id
     ] = action;
@@ -6784,7 +6454,8 @@ function validateAction(
     action
 ) {
 
-    if (!action) return false;
+    if (!action || typeof action !== "object") return false;
+    if (action.type === "none") return true;
 
     if (!alive(player)) {
         return false;
@@ -6814,7 +6485,8 @@ function validateAction(
 
                 return (
                     !!target &&
-                    alive(target)
+                    alive(target) && target.id !== player.id &&
+                    targetOptions(player, player.id).some(p => p.id === target.id)
                 );
             }
 
@@ -7013,7 +6685,7 @@ function validateAction(
             return (
                 action.type ===
                     "swap" &&
-                !game.tricksterUsed &&
+                !player.tricksterUsed &&
                 !!getPlayer(action.a) &&
                 !!getPlayer(action.b) &&
                 action.a !== action.b &&
@@ -7054,6 +6726,8 @@ function onlineAdvanceHostAbility() {
     } else {
 
         resolveAbilities();
+
+        if (game.gameOver) return;
 
         onlineBroadcast({
             type:
@@ -7102,8 +6776,15 @@ function onlineHostSendNextAbility() {
             stage:
                 game.stage,
 
-            role:
-                player.role
+            role: player.role,
+            systems: game.systems,
+            blocked: game.blockedPlayers.has(player.id),
+            lastSilenceRound: player.lastSilenceRound,
+            tricksterUsed: !!player.tricksterUsed,
+            hasInfected: player.hasInfected,
+            displaySwap: game.displaySwap,
+            allyIds: isHostile(player) ? living().filter(isHostile).map(p => p.id) : [],
+            saboteurAlive: living().some(p => p.role === "saboteur")
         }
     );
 }
@@ -7131,20 +6812,8 @@ function onlineHostSendCurrentReaction() {
         game.reactionQueue.length
     ) {
 
-        onlineBroadcast({
-            type:
-                "public_phase",
-
-            phase:
-                "discussion",
-
-            round:
-                game.round,
-
-            stage:
-                game.stage
-        });
-
+        online.activeTurn = null;
+        hostBroadcastDiscussion();
         return;
     }
 
@@ -7185,8 +6854,9 @@ function onlineHostSendCurrentReaction() {
             alive:
                 player.alive,
 
-            role:
-                player.role
+            role: player.role,
+            players: game.players.map(p => ({id: p.id, name: p.name, alive: p.alive})),
+            displaySwap: game.displaySwap
         }
     );
 }
@@ -7196,6 +6866,8 @@ function hostReceiveReactionReady(
     player
 ) {
 
+    if (game.reactionQueue[game.reactionIndex] !== player.id) return;
+    online.activeTurn = null;
     game.reactionIndex++;
 
     onlineHostSendCurrentReaction();
@@ -7211,6 +6883,12 @@ function onlineShowPrivateReaction() {
     const data =
         online.pendingRole;
 
+    if (data?.players) handleOnlinePublicUpdate({players: data.players});
+    if (!online.isHost) {
+        const player = getPlayer(online.playerId);
+        if (player && data?.role) player.role = data.role;
+        game.displaySwap = data?.displaySwap || null;
+    }
     $("reactionResultTitle").textContent =
         "ROUND RESULT";
 
@@ -7233,6 +6911,7 @@ function onlineShowPrivateReaction() {
     $("reactionContinueButton").onclick =
         () => {
 
+            onlineShowWaiting("Result acknowledged. Waiting for the crew…");
             sendPrivateToHost({
                 type:
                     "reaction_ready"
@@ -7326,7 +7005,7 @@ function onlineHostSendNextVote() {
                             id:
                                 p.id,
                             name:
-                                p.name
+                                displayName(p.id)
                         })
                     ),
 
@@ -7437,6 +7116,7 @@ function onlineConfirmVote() {
 
     if (!game.selectedVote) return;
 
+    onlineShowWaiting("Vote submitted. Waiting for the crew…");
     sendPrivateToHost({
         type:
             "vote",
@@ -7456,6 +7136,7 @@ function hostReceiveVote(
     vote
 ) {
 
+    if (living()[game.currentVoteIndex]?.id !== player.id || Object.prototype.hasOwnProperty.call(game.votes, player.id)) return;
     if (
         !alive(player)
     ) {
@@ -7464,7 +7145,7 @@ function hostReceiveVote(
 
     if (
         vote !== "skip" &&
-        !getPlayer(vote)
+        !alive(getPlayer(vote))
     ) {
         return;
     }
@@ -7489,6 +7170,7 @@ function hostReceiveVote(
         return;
     }
 
+    online.activeTurn = null;
     game.votes[
         player.id
     ] = vote;
@@ -7508,6 +7190,8 @@ function handleOnlinePublicPhase(
 ) {
 
     if (online.isHost) return;
+    handleOnlinePublicUpdate(data);
+    game.displaySwap = data.displaySwap || null;
 
 if (
     data.o2RoundsRemaining !==
@@ -7527,21 +7211,17 @@ if (data.systems) {
         "discussion"
     ) {
 
-        onlineShowDiscussion({
-            round:
-                data.round,
-            stage:
-                data.stage
-        });
+        onlineShowDiscussion(data);
+
+    } else if (data.phase === "ability" || data.phase === "reaction") {
+        onlineShowWaiting("Waiting for your private turn…");
 
     } else if (
         data.phase ===
         "voting"
     ) {
 
-        updateOnlineStatus(
-            "Voting phase started. Waiting for your private vote..."
-        );
+        onlineShowWaiting("Voting started. Waiting for your private vote…");
     }
 }
 
@@ -7569,6 +7249,8 @@ $("roundResults").innerHTML =
            <div>Discuss what happened this round.</div>`
         : `<div>Discuss what happened this round.</div>`;
 
+    if (data.results?.length) $("roundResults").innerHTML = data.results.map(r => `<div>${esc(r)}</div>`).join("");
+    $("startVotingButton").hidden = !online.isHost;
     $("startVotingButton").onclick =
         () => {
 
@@ -7598,6 +7280,7 @@ function handleOnlinePublicUpdate(
     data
 ) {
 
+    if (!online.isHost && Object.prototype.hasOwnProperty.call(data, "displaySwap")) game.displaySwap = data.displaySwap;
     if (data.round) {
         game.round =
             data.round;
@@ -7715,10 +7398,12 @@ function hostReceiveCaptainChoice(
         */
     }
 
-    if (!getPlayer(target)) {
+    if (!online.captainTargets?.includes(target) || !alive(getPlayer(target))) {
         return;
     }
 
+    online.activeTurn = null;
+    online.captainTargets = null;
     finishEjection(
         target,
         true
@@ -7789,6 +7474,8 @@ function hostReceiveJudgeChoice(
         return;
     }
 
+    online.activeTurn = null;
+    game.pendingJudge = false;
     if (cancel) {
 
         game.judgeUsed = true;
@@ -7905,22 +7592,10 @@ async function sendPrivateResultsAll(
    ========================================================= */
 
 function hostBroadcastDiscussion() {
-
-    onlineBroadcast({
-        type:
-            "public_phase",
-
-        phase:
-            "discussion",
-
-        round:
-            game.round,
-
-        stage:
-            game.stage
-    });
+    const data = {type: "public_phase", phase: "discussion", round: game.round, stage: game.stage, systems: game.systems, players: game.players.map(p => ({id: p.id, name: p.name, alive: p.alive})), results: game.lastRoundResults, displaySwap: game.displaySwap};
+    onlineBroadcast(data);
+    onlineShowDiscussion(data);
 }
-
 
 /* =========================================================
    ONLINE RADIO
@@ -7940,6 +7615,7 @@ function hostReceiveRadioRequest(
         return;
     }
 
+    if (game.actions[player.id]?.type !== "radio") return;
     const message =
         randomRadioMessage();
 
@@ -8024,20 +7700,27 @@ async function sendPrivateRoleData(
 
 function onlineDisconnect() {
 
+    clearTimeout(online.joinTimer);
+    online.joinTimer = null;
+    online.activeTurn = null;
+    online.turnId = null;
+    online.started = false;
+    online.pendingRole = null;
+    online.pendingPhase = null;
     online.connected =
         false;
 
     if (online.channel) {
 
         try {
-            online.channel.unsubscribe();
+            supabaseClient?.removeChannel(online.channel);
         } catch {}
     }
 
     if (online.privateChannel) {
 
         try {
-            online.privateChannel.unsubscribe();
+            supabaseClient?.removeChannel(online.privateChannel);
         } catch {}
     }
 
@@ -8048,7 +7731,7 @@ function onlineDisconnect() {
             channel => {
 
                 try {
-                    channel.unsubscribe();
+                    supabaseClient?.removeChannel(channel);
                 } catch {}
             }
         );
@@ -8176,9 +7859,9 @@ game.previousActions = {
         ...game.actions
     };
 
-    progressInfections();
-
     resetTransient();
+
+    progressInfections();
 
     game.roundStartAliveIds =
         living().map(
@@ -8416,6 +8099,7 @@ function resolveVotingOnlineAware() {
         );
 
     if (captain) {
+        online.captainTargets = tied;
 
         sendPrivateToPlayer(
             captain.id,
