@@ -965,3 +965,17 @@ button{min-height:46px;border-radius:10px;letter-spacing:.6px;font-size:12px}but
 @media(max-width:600px){body{padding:16px 12px 30px}.masthead{padding-bottom:16px}.ship-signal{letter-spacing:1px}.panel{padding:22px 18px;border-radius:20px}.hero{padding:28px 18px 20px}.hero h1{letter-spacing:8px}.hero .subtitle{font-size:15px;margin-bottom:24px}.mission-controls{padding:16px}.control-grid{grid-template-columns:1fr;gap:14px}.section-heading{font-size:8px;letter-spacing:1px}#playersSetup{grid-template-columns:1fr}.setup-player{padding:14px}.setup-actions{grid-template-columns:1fr 1fr}.setup-actions button:first-child{grid-column:1/-1}.modal-content{padding:18px;margin:8px auto}.role-display{font-size:64px}input,select{font-size:16px}.large-message{line-height:1.6}.choice-grid{gap:10px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
 #onlineWaitingScreen{width:min(900px,100%);margin:0 auto}
+.objective-progress{padding:16px;border:1px solid #596aaa;border-radius:14px;background:#7c81ff0c;text-align:left;margin:16px 0}
+.objective-progress p{font-size:13px;line-height:1.6;margin:8px 0 0;color:var(--muted)}
+.repair-task{grid-column:1/-1;padding:16px;background:#09101c;border:1px solid var(--line);border-radius:14px}
+.repair-task label{display:block;margin:14px 0;font-size:13px}.repair-task input{display:block;width:100%;accent-color:var(--accent)}
+.repair-task output{display:inline-block;min-width:3ch;font-weight:800;color:#a9bcff}
+.mission-history{text-align:left;margin-top:22px;border:1px solid var(--line);border-radius:14px;padding:16px}
+.mission-history summary{cursor:pointer;font-weight:800;font-size:13px}.timeline-entry{padding:14px 0;border-bottom:1px solid var(--line)}
+.timeline-entry small,.timeline-entry strong{display:block}.timeline-entry small{font-size:9px;letter-spacing:1px;color:var(--muted);margin-bottom:6px}.timeline-entry p{font-size:12px;color:#b6c5dc;line-height:1.6;margin:6px 0}
+.recovery-controls{padding:14px;border:1px solid var(--line);border-radius:14px;margin-bottom:20px;background:#0d1625;font-size:11px;line-height:1.6}
+.recovery-controls[hidden],.objective-progress[hidden]{display:none}.recovery-controls .choice-grid{grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-top:8px}
+.ship-event-announcement{padding:18px;border:1px solid #cba660;border-radius:14px;background:#cba66014;color:#ffe0a5;line-height:1.6;font-size:14px;margin:0 0 18px}
+.ship-event-announcement[hidden]{display:none}
+.vote-role-guide{padding:14px;border:1px solid var(--line);border-radius:12px;margin-bottom:18px;font-size:13px}
+.vote-role-guide summary{cursor:pointer;color:var(--muted);font-weight:800}.vote-role-guide strong{display:block;margin-top:14px}.vote-role-guide p{line-height:1.6;color:var(--muted)}

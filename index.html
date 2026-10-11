@@ -163,7 +163,7 @@ content="width=device-width, initial-scale=1.0"
     class="role-description"  
   ></p>  
 
-  <div id="hostileList"></div>  
+  <div id="hostileList"></div><div id="objectiveProgress" class="objective-progress"></div>  
 
   <button  
     id="showActionButton"  
@@ -192,6 +192,7 @@ content="width=device-width, initial-scale=1.0"
     class="action-description"  
   ></p>  
 
+  <div id="actionObjectiveProgress" class="objective-progress"></div>
   <div  
     id="actionOptions"  
     class="choice-grid"  
@@ -377,6 +378,7 @@ content="width=device-width, initial-scale=1.0"
     class="danger-text"  
   ></p>  
 
+  <p class="mode-note">All clear needs a majority of unsilenced living players. Good wins only if no Hostile or non-Jester Neutral remains. A false declaration awards Hostiles the win first, then Neutrals.</p>
   <div  
     id="voteOptions"  
     class="vote-list"  
@@ -585,6 +587,7 @@ content="width=device-width, initial-scale=1.0"
       class="final-players"
     ></div>
 
+    <details class="mission-history"><summary>Mission timeline — all secrets revealed</summary><div id="missionTimeline"></div></details>
     <!-- Online post-game status -->
     <div
       id="onlineReturnStatus"
@@ -680,5 +683,6 @@ content="width=device-width, initial-scale=1.0"
      GAME JS  
      ===================================================== -->    <section id="onlineWaitingScreen" class="screen"><div class="panel center"><div class="eyebrow">CREW LINK</div><h2>Standing by</h2><p id="onlineWaitingMessage" class="large-message" aria-live="polite"></p></div></section>
 <script src="game.js"></script>
+<script src="mission.js"></script>
 </body>  
 </html>

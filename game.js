@@ -134,11 +134,8 @@ const ROLE_DATA = {
     },
 
     parasite: {
-        icon: "🦠",
-        name: "Parasite",
-        team: "Hostile",
-        desc:
-            "Infect 1 player once. The infection is completely secret until it becomes Diseased."
+        icon: "🦠", name: "Parasite", team: "Neutral",
+        desc: "Infect another player once. They keep their role secretly for 2 rounds, then become a Neutral Parasite with their own infection ability. Win with Neutral survivors by reaching Earth."
     },
 
     engineer: {
@@ -154,7 +151,7 @@ const ROLE_DATA = {
         name: "Scientist",
         team: "Human",
         desc:
-            "Check a living player to see Healthy, Infected, Diseased or Parasite. You can cure Infected or Diseased players."
+            "Check a living player to see Healthy, Infected or Parasite. Detect and cure hidden infections or fully transformed Parasites."
     },
 
     detective: {
@@ -265,11 +262,11 @@ const ROLE_DATA = {
 
     diseased: {
         icon: "☣️",
-        name: "Diseased",
-        team: "Hostile",
+        name: "Incubating",
+        team: "Human",
         sub: true,
         desc:
-            "The infection has progressed. You now know that you are Diseased and on the Hostile Team. You cannot use an ability."
+            "A hidden incubation stage. Players retain their original role until they become a Neutral Parasite."
     }
 };
 
@@ -277,8 +274,7 @@ const ROLE_DATA = {
 const HOSTILES = [
     "alien",
     "saboteur",
-    "silencer",
-    "parasite"
+    "silencer"
 ];
 
 const HUMANS = [
@@ -300,7 +296,8 @@ const NEUTRALS = [
     "king",
     "trickster",
     "bountyhunter",
-    "oracle"
+    "oracle",
+    "parasite"
 ];
 
 const ALL_STARTING_ROLES = [
@@ -444,12 +441,12 @@ function roleTeam(roleOrPlayer) {
 
     /*
        IMPORTANT:
-       Infected is treated as Human until it becomes Diseased.
+       New infections retain their current role until full Neutral Parasite transformation. Legacy hidden-stage roles are handled below.
     */
 
     if (role === "infected") return "Human";
 
-    if (role === "diseased") return "Hostile";
+    if (role === "diseased") return typeof roleOrPlayer === "object" ? roleData(roleOrPlayer.originalRole).team : "Human";
 
     return roleData(role).team;
 }
@@ -951,6 +948,7 @@ function startGame() {
 
     game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; p.bountyTarget = null; p.bountyFailed = false; p.oracleCorrect = 0; p.oraclePlayerCorrect = false; p.lastOracleResult = null; });
     game.sabotagedAt = {};
+    resetMission();
 
     game.displaySwap = null;
 
@@ -965,7 +963,7 @@ function startGame() {
 
     resetTransient();
 
-    startRound();
+    beginOpeningVote();
 }
 
 
@@ -974,52 +972,14 @@ function startGame() {
    ========================================================= */
 
 function progressInfections() {
-
-    for (const player of game.players) {
-
-        if (
-            !player.alive ||
-            player.infectionRound === null
-        ) {
-            continue;
-        }
-
-        const age =
-            game.round -
-            player.infectionRound +
-            1;
-
-        /*
-           Infection is secret.
-
-           Round after infection:
-           Infected -> Diseased.
-
-           Next round:
-           Diseased -> Parasite.
-        */
-
-        if (
-            age === 2 &&
-            player.role === "infected"
-        ) {
-
-            player.role = "diseased";
-
-            game.reactionInfo[player.id] =
-                "You became DISEASED. You are on the HOSTILE TEAM.";
-
-        } else if (
-            age >= 3 &&
-            player.role === "diseased"
-        ) {
-
+    for (const player of living()) {
+        if (player.infectionRound == null || player.role === "parasite") continue;
+        if (["infected", "diseased"].includes(player.role)) player.role = player.preInfectionRole || player.originalRole;
+        if (game.round - player.infectionRound >= 2) {
             player.role = "parasite";
-
             player.hasInfected = false;
-
-            game.reactionInfo[player.id] =
-                "You became a PARASITE. You are on the HOSTILE TEAM.";
+            game.reactionInfo[player.id] = "You became a PARASITE. You are now Neutral and can infect another player once.";
+            logMission("infection", player.id, {text: "Transformed into a Neutral Parasite."});
         }
     }
 }
@@ -1053,6 +1013,7 @@ function startRound() {
     resetTransient();
 
     progressInfections();
+    beginMissionRound();
 
     game.roundStartAliveIds =
         living().map(
@@ -1167,6 +1128,7 @@ function showRole() {
     $("roleDescription").textContent =
         roleData(player.role).desc;
 
+    renderObjectiveProgress(player);
     $("hostileList").innerHTML = "";
 
     if (team === "Hostile") {
@@ -1226,9 +1188,12 @@ function showRole() {
         $("roleDescription").textContent =
             roleData(player.originalRole).desc;
 
-        $("hostileList").innerHTML = "";
+        renderObjectiveProgress(player);
+    $("hostileList").innerHTML = "";
     }
 
+    $("showActionButton").textContent = game.initialRoleReveal ? "ROLE READ — CONTINUE" : "CONTINUE TO ABILITY";
+    $("showActionButton").onclick = game.initialRoleReveal ? acknowledgeLocalRole : showAction;
     setScreen("roleScreen");
 }
 
@@ -1263,6 +1228,8 @@ function showAction() {
     $("actionOptions").innerHTML = "";
 
     game.selectedAction = null;
+    renderObjectiveProgress(player);
+    $("confirmActionButton").disabled = false;
 
     if (player.role === "bountyhunter" && (player.bountyTarget || game.round > 1)) {
         $("actionDescription").textContent = player.bountyTarget ? `Bounty: ${realName(player.bountyTarget)}. ${player.bountyFailed ? "Your target died without being voted out. Your bounty cannot be changed." : "Have them voted out while you remain alive."}` : "You did not mark a bounty in round 1. Your objective can no longer be completed.";
@@ -1723,6 +1690,8 @@ function abilityOrder(ids) {
 }
 
 function privateInvestigation(player, message) {
+    logMission("private result", player.id, {text: message});
+    logMission("private result", player.id, {text: message});
     game.investigationResults[player.id] = message;
     game.reactionInfo[player.id] = message;
 }
@@ -1827,6 +1796,7 @@ function renderSystemChoices(
         .forEach(btn => {
 
             btn.onclick = () => {
+                if (engineer) { renderRepairTask(getPlayer(game.abilityQueue[game.abilityIndex]) || getPlayer(online.playerId), btn.dataset.value); return; }
 
                 game.selectedAction =
                     JSON.stringify({
@@ -1887,8 +1857,7 @@ function renderScientistChoices(player) {
                 if (!target) return;
 
                 const canCure =
-                    target.role === "infected" ||
-                    target.role === "diseased";
+                    target.infectionRound != null || (online.connected && !online.isHost);
 
                 $("actionOptions").innerHTML = `
                     ${button(
@@ -2076,6 +2045,8 @@ function applyImmediateAction(
 ) {
 
     if (!action || !action.type || !canAct(player)) return;
+    if (action.type === "repair" && !validRepairTask(player, action)) return;
+    logMission("ability", player.id, action);
 
     if (action.type === "bounty" && player.role === "bountyhunter" && !player.bountyTarget) {
         if (action.target !== player.id && alive(getPlayer(action.target))) {
@@ -2110,6 +2081,7 @@ function applyImmediateAction(
 
 game.systems[action.system] =
     true;
+if (action.system === "communications") { game.commSilenced.clear(); game.commSilenceRound = null; }
 
 if (action.system === "o2") {
     game.o2RoundsRemaining = 3;
@@ -2157,6 +2129,7 @@ game.reactionInfo[player.id] =
            game.sabotagedAt[action.system] = game.round;
            game.systems[action.system] =
     false;
+           if (action.system === "communications") addCommunicationsSilence();
 
 if (action.system === "o2") {
     game.o2RoundsRemaining = 3;
@@ -2267,7 +2240,7 @@ game.reactionInfo[player.id] =
         */
 
         if (
-            target.infectionRound !== null
+            target.infectionRound != null || target.role === "parasite"
         ) {
             return;
         }
@@ -2277,13 +2250,7 @@ game.reactionInfo[player.id] =
         target.infectionRound =
             game.round;
 
-        target.originalRole =
-            target.role;
-
-        target.role =
-            "infected";
-
-        target.hasInfected = false;
+        target.preInfectionRole = target.role;
 
         /*
            DO NOT add a message to target.
@@ -2311,9 +2278,7 @@ game.reactionInfo[player.id] =
 
             let status;
 
-            if (
-                target.role === "infected"
-            ) {
+            if (target.infectionRound != null && target.role !== "parasite") {
                 status = "Infected";
             } else if (
                 target.role === "diseased"
@@ -2334,12 +2299,12 @@ game.reactionInfo[player.id] =
         ) {
 
             if (
-                target.role === "infected" ||
-                target.role === "diseased"
+                target.infectionRound != null
             ) {
 
-                target.role =
-                    "survivor";
+                const transformed = target.role === "parasite";
+                target.role = target.preInfectionRole || target.originalRole || "survivor";
+                target.preInfectionRole = null;
 
                 target.infectionRound =
                     null;
@@ -2348,7 +2313,7 @@ game.reactionInfo[player.id] =
                     false;
 
                 game.reactionInfo[player.id] =
-                    `SCIENCE: ${target.name} was cured and is now a Survivor.`;
+                    `SCIENCE: ${target.name} was cured.`;
 
                 /*
                    The cured player can know they were cured,
@@ -2356,13 +2321,13 @@ game.reactionInfo[player.id] =
                 */
 
                 if (
-                    target.id !== player.id
+                    transformed && target.id !== player.id
                 ) {
 
                     game.reactionInfo[
                         target.id
                     ] =
-                        "You were cured by the Scientist and are now a Survivor.";
+                        "You were cured by the Scientist and your previous role was restored.";
                 }
             }
         }
@@ -2548,13 +2513,13 @@ function randomRadioMessage() {
     const messages = [
         `EARTH: There are exactly ${hostiles.length} hostile players remaining.`,
         `EARTH: ${crew.length} crew members are still alive.`,
-        `EARTH: Engines are ${game.systems.engines ? "online" : "offline"}. Current flight stage: ${game.stage} / 10.`,
-        "EARTH: Communications link is currently stable."
+        `EARTH: Engines are ${game.systems.engines ? "online" : "offline"}. Current flight stage: ${game.stage} / 10.`
     ];
     // These hints must remain true in red herring games too.
     if (hostiles.length && crew.length >= 3) {
         const suspect = rand(hostiles);
-        const names = shuffle([suspect, ...shuffle(crew.filter(p => p.id !== suspect.id)).slice(0, 2)]).map(p => displayName(p.id));
+        const clueSize = crew.length === 3 ? 2 : 3;
+        const names = shuffle([suspect, ...shuffle(crew.filter(p => p.id !== suspect.id)).slice(0, clueSize - 1)]).map(p => displayName(p.id));
         messages.push(`EARTH: ${names.join(", ")} — at least one is hostile.`);
     }
     const interaction = crew.filter(p => ["repair", "sabotage"].includes(game.previousActions[p.id]?.type));
@@ -2645,6 +2610,7 @@ function resolveAbilities() {
         }
 
         target.alive = false;
+        logMission("elimination", actor.id, {target: target.id, text: "Killed after protection and blocks were resolved."});
 
         game.reactionInfo[target.id] =
             "You were eliminated this round.";
@@ -2754,41 +2720,7 @@ function showReactionResult() {
     let message =
         game.reactionInfo[player.id];
 
-    /*
-       Diseased/Parasite transformation messages
-       are allowed to be shown privately.
-    */
-
-    if (!message) {
-
-        if (
-            player.role === "diseased" &&
-            player.infectionRound !== null &&
-            game.round -
-            player.infectionRound +
-            1 === 2
-        ) {
-
-            message =
-                "You became DISEASED. You are on the HOSTILE TEAM.";
-
-        } else if (
-            player.role === "parasite" &&
-            player.infectionRound !== null &&
-            game.round -
-            player.infectionRound +
-            1 >= 3
-        ) {
-
-            message =
-                "You became a PARASITE. You are on the HOSTILE TEAM.";
-
-        } else {
-
-            message =
-                "Nothing happened to you this round.";
-        }
-    }
+    if (!message) message = "Nothing happened to you this round.";
 
     /*
        A dead player still gets their reaction result,
@@ -2839,7 +2771,7 @@ function updateOxygenCountdown() {
         game.o2RoundsRemaining;
 
     if (rounds <= 0) {
-        return "☠️ OXYGEN HAS RUN OUT. THE HOSTILE TEAM WINS.";
+        return living().some(isHostile) ? "☠️ OXYGEN HAS RUN OUT. THE HOSTILE TEAM WINS." : "☠️ OXYGEN HAS RUN OUT. THE CREW IS LOST.";
     }
 
 return `⚠️ OXYGEN WILL RUN OUT IN ${rounds} ${
@@ -2861,8 +2793,8 @@ function advanceOxygenCountdown() {
         game.o2RoundsRemaining <= 0
     ) {
         endGame(
-            "HOSTILE VICTORY",
-            "OXYGEN HAS RUN OUT. The Hostile team wins."
+            living().some(isHostile) ? "HOSTILE VICTORY" : "CREW LOST",
+            living().some(isHostile) ? "OXYGEN HAS RUN OUT. The Hostile team wins." : "Oxygen ran out before the crew could repair the system."
         );
 
         return true;
@@ -2970,11 +2902,7 @@ function showVote() {
         player.name;
 
     const silenced =
-        (
-            game.silencedUntil[
-                player.id
-            ] || 0
-        ) > game.round;
+        isVoteSilenced(player);
 
     $("votingSilenced").textContent =
         silenced
@@ -3011,6 +2939,7 @@ function showVote() {
                             )
                     ),
 
+                button("✅ ALL CLEAR — END THE GAME", "allclear"),
                 button(
                     "⏭️ SKIP",
                     "skip"
@@ -3047,6 +2976,7 @@ function showVote() {
     $("confirmVoteButton").onclick =
         confirmVote;
 
+    renderVoteRole(player);
     setScreen("votingScreen");
 }
 
@@ -3069,6 +2999,7 @@ function confirmVote() {
 
     if (!game.selectedVote) return;
 
+    logMission("vote", player.id, {target: game.selectedVote});
     game.votes[player.id] =
         game.selectedVote;
 
@@ -3084,13 +3015,14 @@ function confirmVote() {
 
 function resolveVoting() {
 
+    if (resolveAllClear()) return;
     const tally = {};
 
     Object.values(game.votes)
         .forEach(vote => {
 
             if (
-                vote === "skip"
+                (vote === "skip" || vote === "allclear")
             ) {
                 return;
             }
@@ -3371,6 +3303,8 @@ function completeEjection(
     byCaptain
 ) {
 
+    logMission("vote outcome", null, {target: id || "skip", text: byCaptain ? "Captain tie-break" : "Final vote outcome"});
+    online.phase = "vote_result";
     const ejectedName = id ? displayName(id) : "";
     game.displaySwap = null;
 
@@ -3411,6 +3345,7 @@ function completeEjection(
         }
     }
 
+    online.voteResult = {title: $("voteResultTitle").textContent, message: $("voteResultMessage").textContent};
     if (!game.gameOver && settleVoteObjectives(id)) return;
     if (!game.gameOver && checkFinalTwoJesterVictory()) return;
     if (game.mode === "online" && online.isHost) {
@@ -3425,6 +3360,7 @@ function completeEjection(
     setScreen(
         "voteResultScreen"
     );
+    saveOnlineSession();
 }
 
 
@@ -3448,6 +3384,7 @@ function afterVoting() {
         return;
     }
 
+    if (continueAfterOpeningVote()) return;
     if (checkVictory()) return;
 
     /*
@@ -3490,6 +3427,7 @@ function afterVoting() {
 
 function showLifeline() {
 
+    if (game.mode === "online") online.phase = "lifeline";
     const hostiles =
         living().filter(
             isHostile
@@ -3536,6 +3474,8 @@ function showLifeline() {
     $("lifelineContinue").onclick =
         proceedToSystems;
 
+    online.lifelineState = {title: $("lifelineTitle").textContent, message: $("lifelineMessage").textContent};
+    saveOnlineSession();
     setScreen(
         "lifelineScreen"
     );
@@ -3604,6 +3544,7 @@ function proceedToSystems() {
     $("nextRoundButton").onclick =
         () => {
 
+            if (game.mode === "online" && online.paused) return;
             game.round++;
 
             game.lastRoundResults = [];
@@ -3784,6 +3725,9 @@ function endGame(
 ) {
 
     game.gameOver = true;
+    logMission("game over", null, {text: `${title}: ${message}`});
+    online.finalResult = {title, message};
+    renderMissionTimeline();
 
     $("gameOverTitle").textContent =
         title;
@@ -3879,6 +3823,7 @@ if (game.mode === "online") {
             type: "game_over",
             title,
             message,
+            timeline: game.timeline,
             players:
                 game.players.map(
                     p => ({
@@ -3957,6 +3902,7 @@ function resetGameForNewLocalGame() {
 
     game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; p.bountyTarget = null; p.bountyFailed = false; p.oracleCorrect = 0; p.oraclePlayerCorrect = false; p.lastOracleResult = null; });
     game.sabotagedAt = {};
+    resetMission();
     game.displaySwap = null;
 
     game.judgeUsed = false;
@@ -4045,6 +3991,7 @@ function resetGameForOnlineLobby() {
 
     game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; p.bountyTarget = null; p.bountyFailed = false; p.oracleCorrect = 0; p.oraclePlayerCorrect = false; p.lastOracleResult = null; });
     game.sabotagedAt = {};
+    resetMission();
     game.displaySwap = null;
 
     game.judgeUsed = false;
@@ -4165,10 +4112,7 @@ function renderRoleGuide() {
 
         [
             "HOSTILE",
-            [
-                ...HOSTILES,
-                "diseased"
-            ]
+            HOSTILES
         ],
 
         [
@@ -5123,6 +5067,7 @@ online.name = name;
         };
 
         await subscribePublicRoom();
+        saveOnlineSession();
 
        updateOnlineSetupUI();
 
@@ -5205,14 +5150,14 @@ online.name = name;
 
         game.mode = "online";
 
-        onlineDisconnect();
+        onlineDisconnect(false);
 
         online.isHost = false;
 
         online.roomCode = room;
 
         online.connectionId =
-            makeConnectionId()
+            savedConnectionId(room) || makeConnectionId()
        
         online.connected = true;
 
@@ -5283,10 +5228,12 @@ function subscribeChannel(channel) {
 
 async function subscribePublicRoom() {
     if (!supabaseClient) throw new Error("Supabase is not available.");
-    const channel = supabaseClient.channel(`alien-room-${online.roomCode}`, {config: {broadcast: {self: false, ack: true}}});
+    const channel = supabaseClient.channel(`alien-room-${online.roomCode}`, {config: {broadcast: {self: false, ack: true}, presence: {key: online.connectionId}}});
     channel.on("broadcast", {event: "alien"}, payload => handleOnlinePublicMessage(payload.payload));
+    channel.on("presence", {event: "sync"}, updateOnlinePresence);
     online.channel = channel;
     await subscribeChannel(channel);
+    await channel.track({connectionId: online.connectionId, playerId: online.playerId, name: online.name, host: online.isHost});
 }
 
 /* =========================================================
@@ -5302,7 +5249,9 @@ function onlineBroadcast(data) {
         return;
     }
 
-    online.channel.send({
+    if (data.type === "public_phase") { online.phase = data.phase; online.publicPhase = data; }
+    saveOnlineSession();
+    return online.channel.send({
         type: "broadcast",
         event: "alien",
         payload: data
@@ -5359,6 +5308,12 @@ async function handleJoinRequest(
 ) {
 
     if (!online.isHost) return;
+    if (online.players[data.connectionId]) {
+        online.players[data.connectionId].connected = true;
+        await sendPrivate(data.connectionId, {type: "join_accepted", playerId: online.players[data.connectionId].playerId, roomCode: online.roomCode, name: online.players[data.connectionId].name});
+        await sendRecoveryState(online.players[data.connectionId].playerId);
+        broadcastRoomState(); return;
+    }
     if (online.started) { await sendPrivate(data.connectionId, {type: "join_denied", reason: "The game has already started."}); return; }
 
     if (
@@ -5546,7 +5501,8 @@ function handleLeaveRequest(
     const connection = online.players[data.connectionId];
     if (online.started) {
         updateOnlineStatus(`${connection?.name || "A player"} left during the game. Return to the lobby to start again.`);
-        hostReturnEveryoneToLobby();
+        if (connection) connection.connected = false;
+        saveOnlineSession(); broadcastRoomState(); renderRecoveryControls(); return;
     }
     const channel = online.hostPrivateChannels[data.connectionId];
     if (channel) supabaseClient.removeChannel(channel);
@@ -5604,6 +5560,8 @@ function handleOnlinePublicMessage(
         return;
     }
 
+    if (data.type === "public_pause") { online.paused = data.paused; if (data.paused) onlineShowWaiting("The host paused the game."); else sendPrivateToHost({type: "sync_request"}); renderRecoveryControls(); return; }
+    if (data.type === "ship_event") { announceShipEvent(data.message, data.round, false); return; }
     switch (data.type) {
 
         case "join_request":
@@ -5746,6 +5704,7 @@ function handleOnlinePublicMessage(
 
             if (!online.isHost) {
 
+                game.timeline = data.timeline || [];
                 game.players =
                     data.players.map(
                         p => ({
@@ -5970,6 +5929,7 @@ if (
 
     game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; p.bountyTarget = null; p.bountyFailed = false; p.oracleCorrect = 0; p.oraclePlayerCorrect = false; p.lastOracleResult = null; });
     game.sabotagedAt = {};
+    resetMission();
 
     game.displaySwap = null;
 
@@ -5984,11 +5944,12 @@ game.o2RoundsRemaining = 3;
 
 resetTransient();
 
+    prepareInitialRoles();
     /*
        Public game start contains NO roles.
     */
 
-    onlineBroadcast({
+    await onlineBroadcast({
 
         type:
             "game_start",
@@ -6047,12 +6008,14 @@ resetTransient();
                     player.originalRole,
 
                 allies: isHostile(player) ? living().filter(p => p.id !== player.id && isHostile(p)).map(p => ({id: p.id, name: p.name})) : [],
+                roleRevealId: game.roleRevealId,
+                objectiveProgress: objectiveProgress(player),
                 round: game.round
             }
         );
     }
 
-    startRound();
+    beginOpeningVote();
 }
 
 
@@ -6102,10 +6065,12 @@ function handleOnlinePrivateMessage(
 }
 
 function receivePrivateGameData(data) {
+    if (data.type === "private_sync") { applyRecoveryState(data); return; }
     if (game.gameOver && data.type.startsWith("private_")) return;
     if (data.round) game.round = data.round;
     if (data.stage) game.stage = data.stage;
     if (data.turnId) online.turnId = data.turnId;
+    if (online.paused && ["private_action", "private_reaction", "private_vote", "private_captain", "private_judge"].includes(data.type)) { online.pendingRole = data; onlineShowWaiting("The host paused the game."); return; }
     /*
        CLIENT receives private data.
     */
@@ -6114,8 +6079,10 @@ function receivePrivateGameData(data) {
 
         case "join_accepted":
 
+            saveOnlineSession();
             online.playerId =
                 data.playerId;
+            online.channel?.track({connectionId: online.connectionId, playerId: online.playerId, name: online.name, host: false});
 
           online.name =
     data.name;
@@ -6126,6 +6093,7 @@ function receivePrivateGameData(data) {
 
             clearTimeout(online.joinTimer);
             online.joinTimer = null;
+            saveOnlineSession();
             updateOnlineSetupUI();
 
             break;
@@ -6141,6 +6109,7 @@ function receivePrivateGameData(data) {
 
 
         case "private_role":
+            online.allies = data.allies || [];
 
             online.pendingRole =
                 data;
@@ -6267,6 +6236,9 @@ function handleHostPrivateRequest(
 
     if (!player) return;
 
+    if (data.type === "role_ready") { acknowledgeOnlineRole(player, data.roleRevealId); return; }
+    if (data.type === "sync_request") { sendRecoveryState(player.id); return; }
+    if (online.paused) return;
     const prompts = {ability_action: "private_action", reaction_ready: "private_reaction", vote: "private_vote", captain_choice: "private_captain", judge_choice: "private_judge"};
     if (prompts[data.type]) {
         const turn = online.activeTurn;
@@ -6362,6 +6334,8 @@ async function sendPrivateToPlayer(playerId, data) {
         payload.turnId = `${data.type}:${game.round}:${playerId}:${online.turnSequence}`;
         online.activeTurn = {id: payload.turnId, playerId, type: data.type};
     }
+    (online.lastPackets ||= {})[playerId] = payload;
+    saveOnlineSession();
     await sendPrivate(connection.connectionId, payload);
 }
 
@@ -6434,6 +6408,8 @@ function onlineApplyPrivateRole(
     $("roleDescription").textContent =
         roleData(player.role).desc;
 
+    if (data.objectiveProgress) online.objectiveProgress = data.objectiveProgress;
+    renderObjectiveProgress(player);
     $("hostileList").innerHTML =
         "";
 
@@ -6460,7 +6436,11 @@ function onlineApplyPrivateRole(
             `;
     }
 
-    $("showActionButton").onclick = () => onlineShowWaiting("Waiting for your ability turn…");
+    $("showActionButton").textContent = data.roleRevealId ? "ROLE READ — READY FOR DISCUSSION" : "CONTINUE";
+    $("showActionButton").onclick = () => {
+        onlineShowWaiting("Waiting for everyone to read their role…");
+        if (data.roleRevealId) sendPrivateToHost({type: "role_ready", roleRevealId: data.roleRevealId});
+    };
     setScreen(
         "roleScreen"
     );
@@ -6501,6 +6481,9 @@ function onlineShowPrivateAction(data = {}) {
         player.oracleCorrect = data.oracleCorrect || 0;
         player.oraclePlayerCorrect = !!data.oraclePlayerCorrect;
         player.lastOracleResult = data.lastOracleResult || null;
+        player.bountyResolved = !!data.bountyResolved;
+        if (data.repairChallenges) game.repairChallenges[player.id] = data.repairChallenges;
+        online.objectiveProgress = data.objectiveProgress;
         game.backupPowered = new Set(data.backupPowered ? [player.id] : []);
         game.sabotagedAt = data.sabotagedAt || {};
         player.lastSilenceRound = data.lastSilenceRound ?? null;
@@ -6687,7 +6670,7 @@ function validateAction(
             return (
                 action.type ===
                 "infect" &&
-                !player.hasInfected &&
+                !player.hasInfected && action.target !== player.id && getPlayer(action.target)?.infectionRound == null && getPlayer(action.target)?.role !== "parasite" &&
                 !!getPlayer(
                     action.target
                 ) &&
@@ -6704,7 +6687,7 @@ function validateAction(
             return (
                 action.type ===
                 "repair" &&
-                canRepairSystem(action.system)
+                canRepairSystem(action.system) && validRepairTask(player, action)
             );
 
 
@@ -6735,10 +6718,7 @@ function validateAction(
             ) {
 
                 return (
-                    scienceTarget.role ===
-                        "infected" ||
-                    scienceTarget.role ===
-                        "diseased"
+                    scienceTarget.infectionRound != null
                 );
             }
 
@@ -6924,6 +6904,8 @@ function onlineHostSendNextAbility() {
             lastSilenceRound: player.lastSilenceRound,
             tricksterUsed: !!player.tricksterUsed,
             hasInfected: player.hasInfected,
+            objectiveProgress: objectiveProgress(player),
+            repairChallenges: player.role === "engineer" ? prepareRepairTasks(player) : null,
             backupPowered: game.backupPowered.has(player.id),
             sabotagedAt: game.sabotagedAt,
             bountyTarget: player.bountyTarget,
@@ -7078,6 +7060,7 @@ function onlineShowPrivateReaction() {
    ========================================================= */
 
 function onlineStartVoting() {
+    if (online.paused) return;
 
     if (!online.isHost) {
 
@@ -7159,11 +7142,7 @@ function onlineHostSendNextVote() {
                     ),
 
             silenced:
-                (
-                    game.silencedUntil[
-                        player.id
-                    ] || 0
-                ) > game.round
+                isVoteSilenced(player)
         }
     );
 }
@@ -7218,6 +7197,7 @@ function onlineShowPrivateVote(
                             )
                     ),
 
+                    button("✅ ALL CLEAR — END THE GAME", "allclear"),
                     button(
                         "⏭️ SKIP",
                         "skip"
@@ -7255,6 +7235,7 @@ function onlineShowPrivateVote(
     $("confirmVoteButton").onclick =
         onlineConfirmVote;
 
+    renderVoteRole(player);
     setScreen(
         "votingScreen"
     );
@@ -7293,7 +7274,7 @@ function hostReceiveVote(
     }
 
     if (
-        vote !== "skip" &&
+        vote !== "skip" && vote !== "allclear" &&
         !alive(getPlayer(vote))
     ) {
         return;
@@ -7306,11 +7287,7 @@ function hostReceiveVote(
     }
 
     const silenced =
-        (
-            game.silencedUntil[
-                player.id
-            ] || 0
-        ) > game.round;
+        isVoteSilenced(player);
 
     if (
         silenced &&
@@ -7320,6 +7297,7 @@ function hostReceiveVote(
     }
 
     online.activeTurn = null;
+    logMission("vote", player.id, {target: vote});
     game.votes[
         player.id
     ] = vote;
@@ -7848,8 +7826,9 @@ async function sendPrivateRoleData(
    ONLINE RECONNECT / DISCONNECT
    ========================================================= */
 
-function onlineDisconnect() {
+function onlineDisconnect(clearSession = true) {
 
+    if (clearSession) clearOnlineSession();
     clearTimeout(online.joinTimer);
     online.joinTimer = null;
     online.activeTurn = null;
@@ -8012,6 +7991,7 @@ game.previousActions = {
     resetTransient();
 
     progressInfections();
+    beginMissionRound();
 
     game.roundStartAliveIds =
         living().map(
@@ -8046,6 +8026,7 @@ const originalAfterVoting =
     afterVoting;
 
 function afterVotingOnlineAware() {
+    if (online.paused) return;
 
     if (
         game.mode !== "online" ||
@@ -8066,6 +8047,7 @@ function afterVotingOnlineAware() {
         return;
     }
 
+    if (continueAfterOpeningVote()) return;
     if (checkVictory()) return;
 
     if (
@@ -8134,6 +8116,7 @@ function resolveVotingOnlineAware() {
         return;
     }
 
+    if (resolveAllClear()) return;
     const tally = {};
 
     Object.values(
@@ -8142,7 +8125,7 @@ function resolveVotingOnlineAware() {
         vote => {
 
             if (
-                vote === "skip"
+                (vote === "skip" || vote === "allclear")
             ) return;
 
             tally[vote] =
@@ -8312,6 +8295,7 @@ const originalProceedToSystems =
     proceedToSystems;
 
 function proceedToSystemsOnlineAware() {
+    if (online.paused) return;
 
     if (
         game.mode !== "online" ||
@@ -8323,6 +8307,7 @@ function proceedToSystemsOnlineAware() {
         return;
     }
 
+    online.phase = "systems";
     if (game.systems.engines) {
 
         game.stage++;
@@ -8387,6 +8372,7 @@ function proceedToSystemsOnlineAware() {
     $("nextRoundButton").onclick =
         () => {
 
+            if (game.mode === "online" && online.paused) return;
             game.round++;
 
             game.lastRoundResults =
@@ -8637,6 +8623,7 @@ function initGameUI() {
     if (!playerCount) return;
 
     ensureOnlineUI();
+    ensureRecoveryUI();
     $("assignmentMode").onchange = event => {
         setupMode = event.target.value;
         game.randomRoles = {};
@@ -8790,6 +8777,7 @@ async function bootAlien() {
     */
 
     initGameUI();
+    renderRecoveryControls();
 
     /*
        Try loading Supabase in the background.
