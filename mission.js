@@ -12,6 +12,8 @@ function resetMission() {
     game.roleRevealId = null;
     game.rolesPending = new Set();
     game.repairChallenges = {};
+    game.repairImmunity = {};
+    game.publicClueRound = null;
     game.timeline = [];
     game.players.forEach(p => { p.preInfectionRole = null; });
     online.paused = false;
@@ -39,6 +41,7 @@ function addCommunicationsSilence() {
     if (!eligible.length) return;
     const player = rand(eligible);
     game.commSilenced.add(player.id);
+    game.lastRoundResults.push(`COMMUNICATIONS: ${realName(player.id)} cannot vote until Communications is repaired.`);
     logMission("communications", null, {target: player.id, text: "Communications outage removed this player's vote until the system was repaired."});
 }
 
@@ -196,7 +199,7 @@ function getRepairTask(player, system) {
     const tasks = game.repairChallenges[player.id] ||= {};
     if (tasks[system]?.round === game.round) return tasks[system];
     const values = system === "power" ? shuffle(["RED / A", "BLUE / B", "GREEN / C"]) : system === "engines" ? Array.from({length: 3}, () => 1 + Math.floor(Math.random() * 5)) : system === "o2" ? [21, 79] : shuffle([1, 2, 3, 4]);
-    return tasks[system] = {id: `${game.round}:${player.id}:${system}:${Math.random().toString(36).slice(2)}`, round: game.round, system, values};
+    return tasks[system] = {id: `${game.round}:${player.id}:${system}:${Math.random().toString(36).slice(2)}`, round: game.round, system, values, mistakes: 0};
 }
 
 function prepareRepairTasks(player) {
@@ -206,45 +209,90 @@ function prepareRepairTasks(player) {
 
 function validRepairTask(player, action) {
     const task = game.repairChallenges[player.id]?.[action.system];
-    return !!task && task.round === game.round && task.id === action.taskId && Array.isArray(action.repairProof) && JSON.stringify(task.values) === JSON.stringify(action.repairProof);
+    return !!task && !task.failed && task.round === game.round && task.id === action.taskId && Array.isArray(action.repairProof) && JSON.stringify(task.values) === JSON.stringify(action.repairProof);
+}
+
+function canSabotageSystem(system) {
+    return game.systems[system] === true && (game.repairImmunity?.[system] ?? -1) < game.round;
+}
+
+function preparePublicBriefing() {
+    if (game.openingVote || game.publicClueRound === game.round) return;
+    game.publicClueRound = game.round;
+    if (game.round % 3 === 0 && game.systems.communications) {
+        game.lifelineNumber++;
+        game.lastRoundResults.push('PUBLIC EARTH LIFELINE #' + game.lifelineNumber + ' — ' + randomRadioMessage());
+    }
 }
 
 function renderRepairTask(player, system) {
     const task = getRepairTask(player, system);
+    game.activeRepairTask = task.id;
     game.selectedAction = null;
-    $("confirmActionButton").disabled = true;
-    const finish = proof => {
-        game.selectedAction = {type: "repair", system, taskId: task.id, repairProof: proof};
-        $("confirmActionButton").disabled = false;
-        $("repairTaskStatus").textContent = "Task complete. Confirm to repair the system.";
+    $('confirmActionButton').disabled = true;
+    const icons = {power: '⚡', engines: '🚀', o2: '🫧', communications: '📡'};
+    const titles = {power: 'Circuit junction', engines: 'Thruster alignment', o2: 'Atmosphere laboratory', communications: 'Deep-space beacon'};
+    $('actionDescription').textContent = system.toUpperCase() + ' REPAIR';
+    $('actionOptions').innerHTML = '<section id="repairTask" class="repair-task repair-' + system + '"><header><span class="repair-emblem">' + icons[system] + '</span><div><small>ENGINEERING / ' + system.toUpperCase() + '</small><h3>' + titles[system] + '</h3></div></header><div id="repairControls"></div></section><p id="repairTaskStatus" aria-live="polite"></p>';
+    const status = text => $('repairTaskStatus').textContent = text;
+    const fail = () => {
+        task.failed = true;
+        game.selectedAction = 'none';
+        $('confirmActionButton').disabled = false;
+        $('repairControls').innerHTML = '<div class="repair-outcome">✕ REPAIR FAILED<br><small>Confirm to end this turn. Try again next round.</small></div>';
+        status('System remains offline.');
     };
-    const title = {power: "Connect matching wires", engines: "Calibrate the three thrusters", o2: "Balance the air mixture", communications: "Rebuild the beacon signal"}[system];
-    $("actionDescription").textContent = `${system.toUpperCase()} REPAIR — ${title}`;
-    $("actionOptions").innerHTML = '<div id="repairTask" class="repair-task"></div><p id="repairTaskStatus" aria-live="polite"></p>';
-    if (system === "power" || system === "communications") {
+    const finish = proof => {
+        task.complete = true;
+        game.selectedAction = {type: 'repair', system, taskId: task.id, repairProof: proof};
+        $('confirmActionButton').disabled = false;
+        $('repairControls').innerHTML = '<div class="repair-outcome">✓ SYSTEM SYNCHRONISED</div>';
+        status('Task complete. Confirm to repair the system.');
+    };
+    const mistake = () => {
+        task.mistakes++;
+        if (task.mistakes >= 3) { fail(); return false; }
+        status('Mismatch. ' + (3 - task.mistakes) + ' tries remaining.');
+        return true;
+    };
+    if (task.failed) { fail(); return; }
+    if (task.complete) { finish(task.values); return; }
+    if (system === 'power' || system === 'communications') {
         let proof = [];
         const render = () => {
-            const options = system === "power" ? ["RED / A", "BLUE / B", "GREEN / C"] : [1, 2, 3, 4];
-            $("repairTask").innerHTML = `<p>${system === "power" ? `Wire ${proof.length + 1}: connect ${esc(task.values[proof.length])} to its terminal.` : `Transmit sequence: ${task.values.join(" → ")}. ${proof.length} / 4 tones entered.`}</p><div class="choice-grid">${options.map(value => button(esc(value), value)).join("")}</div>`;
-            $("repairTask").querySelectorAll("button").forEach(btn => btn.onclick = () => {
-                const value = system === "power" ? btn.dataset.value : Number(btn.dataset.value);
-                if (value !== task.values[proof.length]) { proof = []; $("repairTaskStatus").textContent = "Mismatch. Start the connection sequence again."; render(); return; }
+            const options = system === 'power' ? ['RED / A', 'BLUE / B', 'GREEN / C'] : [1, 2, 3, 4];
+            $('repairControls').innerHTML = '<div class="repair-diagram">' + (system === 'power' ? '◉ ━━━ ⚡ ━━━ ◉' : '▁ ▃ ▆ █ ▆ ▃ ▁') + '</div><p>' + (system === 'power' ? 'Connect terminal ' + task.values[proof.length] : 'Transmit: ' + task.values.join(' → ')) + '</p><div class="repair-progress">' + options.map((_,i) => '<i class="' + (i < proof.length ? 'lit' : '') + '"></i>').join('') + '</div><div class="choice-grid">' + options.map(v => button(esc(v), v)).join('') + '</div>';
+            $('repairControls').querySelectorAll('button').forEach(btn => btn.onclick = () => {
+                const value = system === 'power' ? btn.dataset.value : Number(btn.dataset.value);
+                if (value !== task.values[proof.length]) { proof = []; if (mistake()) render(); return; }
                 proof.push(value);
-                if (proof.length === task.values.length) { $("repairTask").innerHTML = '<p>✓ Circuit connected.</p>'; finish(proof); }
-                else render();
+                if (proof.length === task.values.length) finish(proof); else render();
             });
         };
         render();
+        status((3 - task.mistakes) + ' tries remaining.');
     } else {
-        const labels = system === "engines" ? ["Port thruster", "Centre thruster", "Starboard thruster"] : ["Oxygen %", "Nitrogen %"];
-        $("repairTask").innerHTML = `<p>${system === "engines" ? "Match each thruster to its requested output." : "Set breathable air to 21% oxygen and 79% nitrogen."}</p>${labels.map((label, i) => `<label>${label} · target ${task.values[i]}<input type="range" min="0" max="${system === "engines" ? 5 : 100}" value="0" data-dial="${i}"><output id="repairDial${i}">0</output></label>`).join("")}`;
-        const dials = [...$("repairTask").querySelectorAll("input")];
-        dials.forEach(dial => dial.oninput = () => {
-            $("repairDial" + dial.dataset.dial).textContent = dial.value;
+        const labels = system === 'engines' ? ['Port thruster', 'Centre thruster', 'Starboard thruster'] : ['Oxygen %', 'Nitrogen %'];
+        $('repairControls').innerHTML = '<div class="repair-diagram">' + (system === 'engines' ? '◁ ▥ ◇ ▥ ▷' : '◯ O₂ ── ◉ ── N₂ ◯') + '</div><p>' + (system === 'engines' ? 'Match the requested thrust, then test alignment.' : 'Balance breathable air before the tank empties.') + '</p><strong id="repairClock"></strong>' + labels.map((label,i) => '<label>' + label + ' · target ' + task.values[i] + '<input aria-label="' + label + '" type="range" min="0" max="' + (system === 'engines' ? 5 : 100) + '" value="0" data-dial="' + i + '"><output id="repairDial' + i + '">0</output></label>').join('') + '<button id="testRepair" type="button">' + (system === 'engines' ? 'TEST ALIGNMENT' : 'SEAL AIR MIXTURE') + '</button>';
+        const dials = [...$('repairControls').querySelectorAll('input')];
+        dials.forEach(dial => dial.oninput = () => $('repairDial' + dial.dataset.dial).textContent = dial.value);
+        $('testRepair').onclick = () => {
+            if (system === 'o2' && Date.now() >= task.deadline) { fail(); return; }
             const proof = dials.map(d => Number(d.value));
             if (JSON.stringify(proof) === JSON.stringify(task.values)) finish(proof);
-            else { game.selectedAction = null; $("confirmActionButton").disabled = true; $("repairTaskStatus").textContent = "Adjust every dial to its target."; }
-        });
+            else if (system === 'engines') mistake();
+            else status('Mixture unsafe. Adjust the gases before time runs out.');
+        };
+        if (system === 'o2') {
+            task.deadline ||= Date.now() + 10000;
+            const tick = () => {
+                if (task.complete || task.failed || game.activeRepairTask !== task.id || !$('repairClock') || game.round !== task.round) return;
+                const remaining = Math.max(0, task.deadline - Date.now());
+                $('repairClock').textContent = 'TANK PRESSURE · ' + (remaining / 1000).toFixed(1) + 's';
+                if (!remaining) fail(); else setTimeout(tick, 100);
+            };
+            tick();
+        } else status((3 - task.mistakes) + ' tries remaining.');
     }
 }
 

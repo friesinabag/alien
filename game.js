@@ -143,7 +143,7 @@ const ROLE_DATA = {
         name: "Engineer",
         team: "Human",
         desc:
-            "Repair 1 offline ship system each round, starting the round after it was sabotaged. Engineer can act even while Power is offline."
+            "Repair 1 offline ship system each round, starting the round after it was sabotaged. Repaired systems resist sabotage through the next round. Tasks allow 3 tries; O2 has a 10-second timer. Engineer can act even while Power is offline."
     },
 
     scientist: {
@@ -1756,7 +1756,7 @@ function renderSystemChoices(
                     system =>
                         canRepairSystem(system)
                 )
-            : Object.keys(game.systems).filter(system => game.systems[system]);
+            : Object.keys(game.systems).filter(canSabotageSystem);
 
     if (!systems.length) {
 
@@ -2081,6 +2081,7 @@ function applyImmediateAction(
 
 game.systems[action.system] =
     true;
+game.repairImmunity[action.system] = game.round + 1;
 if (action.system === "communications") { game.commSilenced.clear(); game.commSilenceRound = null; }
 
 if (action.system === "o2") {
@@ -2123,9 +2124,10 @@ game.reactionInfo[player.id] =
         }
 
         if (
-            game.systems[action.system] === true
+            canSabotageSystem(action.system)
         ) {
 
+           game.lastRoundResults.push(`SABOTAGE: ${action.system.toUpperCase()} is offline.`);
            game.sabotagedAt[action.system] = game.round;
            game.systems[action.system] =
     false;
@@ -2188,6 +2190,7 @@ game.reactionInfo[player.id] =
     ) {
 
         if (player.role === "silencer" && alive(getPlayer(action.target))) {
+            game.lastRoundResults.push(`${realName(action.target)} has been silenced and cannot vote for 2 rounds.`);
             player.lastSilenceRound = game.round;
             game.silencedUntil[
                 action.target
@@ -2808,6 +2811,7 @@ function advanceOxygenCountdown() {
    ========================================================= */
 
 function showDiscussion() {
+    preparePublicBriefing();
 
     $("discussionRound").textContent =
         `ROUND ${game.round}`;
@@ -3387,37 +3391,7 @@ function afterVoting() {
     if (continueAfterOpeningVote()) return;
     if (checkVictory()) return;
 
-    /*
-       Earth lifeline exactly every 3 rounds.
-       R3, R6, R9...
-    */
-
-    if (
-        game.round % 3 === 0
-    ) {
-
-        if (
-            game.systems.communications
-        ) {
-
-            game.lifelineNumber++;
-
-            showLifeline();
-
-        } else {
-
-            /*
-               Once Communications is offline at the
-               lifeline checkpoint, that lifeline is lost.
-            */
-
-            proceedToSystems();
-        }
-
-    } else {
-
-        proceedToSystems();
-    }
+    proceedToSystems();
 }
 
 
@@ -3467,9 +3441,9 @@ function showLifeline() {
         `EARTH LIFELINE #${game.lifelineNumber}`;
 
     $("lifelineMessage").textContent =
-        clue.length
+        actualHostile
             ? `⚠️ ONE OF THESE PLAYERS IS HOSTILE: ${clue.map(p => p.name).join(", ")}`
-            : "Earth sent no useful clue.";
+            : "EARTH: There are no living Hostile players.";
 
     $("lifelineContinue").onclick =
         proceedToSystems;
@@ -6486,6 +6460,7 @@ function onlineShowPrivateAction(data = {}) {
         online.objectiveProgress = data.objectiveProgress;
         game.backupPowered = new Set(data.backupPowered ? [player.id] : []);
         game.sabotagedAt = data.sabotagedAt || {};
+        game.repairImmunity = data.repairImmunity || {};
         player.lastSilenceRound = data.lastSilenceRound ?? null;
         player.tricksterUsed = !!data.tricksterUsed;
         game.systems = data.systems || game.systems;
@@ -6631,9 +6606,7 @@ function validateAction(
                             p.role ===
                             "saboteur"
                     ) &&
-                    !!game.systems[
-                        action.system
-                    ]
+                    canSabotageSystem(action.system)
                 );
             }
 
@@ -6645,7 +6618,7 @@ function validateAction(
             return (
                 action.type ===
                 "sabotage" &&
-                game.systems[action.system] === true
+                canSabotageSystem(action.system)
             );
 
 
@@ -6907,6 +6880,7 @@ function onlineHostSendNextAbility() {
             objectiveProgress: objectiveProgress(player),
             repairChallenges: player.role === "engineer" ? prepareRepairTasks(player) : null,
             backupPowered: game.backupPowered.has(player.id),
+            repairImmunity: game.repairImmunity,
             sabotagedAt: game.sabotagedAt,
             bountyTarget: player.bountyTarget,
             bountyFailed: player.bountyFailed,
@@ -7720,6 +7694,7 @@ async function sendPrivateResultsAll(
    ========================================================= */
 
 function hostBroadcastDiscussion() {
+    preparePublicBriefing();
     const data = {type: "public_phase", phase: "discussion", round: game.round, stage: game.stage, systems: game.systems, players: game.players.map(p => ({id: p.id, name: p.name, alive: p.alive})), results: game.lastRoundResults, displaySwap: game.displaySwap};
     onlineBroadcast(data);
     onlineShowDiscussion(data);
@@ -8050,47 +8025,7 @@ function afterVotingOnlineAware() {
     if (continueAfterOpeningVote()) return;
     if (checkVictory()) return;
 
-    if (
-        game.round % 3 === 0
-    ) {
-
-        if (
-            game.systems.communications
-        ) {
-
-            game.lifelineNumber++;
-
-            onlineBroadcast({
-                type:
-                    "public_update",
-
-                round:
-                    game.round,
-
-                stage:
-                    game.stage,
-
-                systems:
-                    game.systems,
-
-                lifeline:
-                    true,
-
-                lifelineNumber:
-                    game.lifelineNumber
-            });
-
-            showLifeline();
-
-        } else {
-
-            proceedToSystems();
-        }
-
-    } else {
-
-        proceedToSystems();
-    }
+    proceedToSystems();
 }
 
 afterVoting =
