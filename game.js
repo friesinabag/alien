@@ -3022,11 +3022,13 @@ function resolveVoting() {
     if (resolveAllClear()) return;
     const tally = {};
 
-    Object.values(game.votes)
+    Object.entries(game.votes)
+        .filter(([id]) => alive(getPlayer(id)) && !isVoteSilenced(getPlayer(id)))
+        .map(([, vote]) => vote)
         .forEach(vote => {
 
             if (
-                (vote === "skip" || vote === "allclear")
+                vote === "allclear"
             ) {
                 return;
             }
@@ -3053,7 +3055,8 @@ function resolveVoting() {
        No votes.
     */
 
-    if (!tied.length) {
+    // Skip is a ballot for no ejection and wins ties against player ballots.
+    if (!tied.length || tied.includes("skip")) {
 
         finishEjection(
             null,
@@ -8054,13 +8057,14 @@ function resolveVotingOnlineAware() {
     if (resolveAllClear()) return;
     const tally = {};
 
-    Object.values(
+    Object.entries(
         game.votes
-    ).forEach(
+    ).filter(([id]) => alive(getPlayer(id)) && !isVoteSilenced(getPlayer(id)))
+    .map(([, vote]) => vote).forEach(
         vote => {
 
             if (
-                (vote === "skip" || vote === "allclear")
+                vote === "allclear"
             ) return;
 
             tally[vote] =
@@ -8082,7 +8086,8 @@ function resolveVotingOnlineAware() {
                     max > 0
             );
 
-    if (!tied.length) {
+    // A Captain cannot override a winning or tied no-ejection ballot.
+    if (!tied.length || tied.includes("skip")) {
 
         completeEjection(
             null,
