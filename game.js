@@ -143,7 +143,7 @@ const ROLE_DATA = {
         name: "Engineer",
         team: "Human",
         desc:
-            "Repair 1 offline ship system each round, starting the round after it was sabotaged. Repaired systems resist sabotage through the next round. Tasks allow 3 tries; O2 has a 10-second timer. Engineer can act even while Power is offline."
+            "Repair 1 offline ship system each round, starting the round after it was sabotaged. Repaired systems resist sabotage through the next round. O2, Power and Communications have 15-second tasks. Engines allow two safe mistakes; a third wrong lever pull kills you. Engineer can act even while Power is offline."
     },
 
     scientist: {
@@ -2047,6 +2047,15 @@ function applyImmediateAction(
     if (!action || !action.type || !canAct(player)) return;
     if (action.type === "repair" && !validRepairTask(player, action)) return;
     logMission("ability", player.id, action);
+
+    if (action.type === "repairAccident" && validEngineAccident(player, action)) {
+        player.alive = false;
+        game.repairChallenges[player.id].engines.failed = true;
+        game.reactionInfo[player.id] = "You died in an engine repair accident after three incorrect fuel submissions.";
+        game.lastRoundResults.push(`${realName(player.id)} died in an engine repair accident. Engines remain offline.`);
+        logMission("engine repair death", player.id, {text: "Three incorrect fuel submissions caused a fatal engine overload."});
+        return;
+    }
 
     if (action.type === "bounty" && player.role === "bountyhunter" && !player.bountyTarget) {
         if (action.target !== player.id && alive(getPlayer(action.target))) {
@@ -6660,6 +6669,7 @@ function validateAction(
 
         case "engineer":
 
+            if (action.type === "repairAccident") return validEngineAccident(player, action);
             return (
                 action.type ===
                 "repair" &&

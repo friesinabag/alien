@@ -1003,3 +1003,34 @@ button{min-height:46px;border-radius:10px;letter-spacing:.6px;font-size:12px}but
 .preset-panel label { display:grid; gap:8px; margin:16px 0; }
 .preset-panel > button { width:100%; }
 #presetStatus { min-height:1.5em; margin-bottom:0; }
+/* Interactive engineering instruments */
+#repairTask { grid-column:1 / -1; width:100%; box-sizing:border-box; }
+.repair-time-track { height:4px; background:#ffffff12; margin-bottom:20px; overflow:hidden; }
+.repair-time-track i { display:block; height:100%; background:var(--repair-accent); box-shadow:0 0 12px var(--repair-accent); }
+.wire-board { position:relative; display:flex; justify-content:space-between; height:250px; touch-action:none; user-select:none; }
+.wire-board svg { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible; }
+.wire-board path { fill:none; stroke-width:6; stroke-linecap:round; filter:drop-shadow(0 0 4px #ffffff44); }
+.wire-bank { display:flex; flex-direction:column; justify-content:space-around; z-index:1; width:30%; }
+.wire-terminal { display:flex; align-items:center; justify-content:space-between; padding:8px!important; font-size:.7rem!important; color:var(--wire)!important; border-color:var(--wire)!important; background:#10141e!important; cursor:grab; touch-action:none; }
+.wire-terminal span { font-size:1.4rem; }
+.signal-scope { position:relative; color:var(--repair-accent); background:repeating-linear-gradient(0deg,transparent 0 24px,#c6a0ff12 24px 25px),repeating-linear-gradient(90deg,transparent 0 24px,#c6a0ff12 24px 25px),#030710; border:1px solid #c6a0ff66; border-radius:12px; overflow:hidden; }
+.signal-scope svg { width:100%; display:block; }
+#signalQuality { display:block; text-align:center; padding:10px; font: .7rem monospace; letter-spacing:.1em; }
+.signal-dial { position:relative; width:124px; height:124px; margin:24px auto; border-radius:50%; border:8px solid #3a3050; background:radial-gradient(circle at 35% 25%,#55486f,#171322 75%); box-shadow:0 12px 22px #0008,inset 0 0 0 2px #b396df77; cursor:grab; touch-action:none; outline-offset:8px; }
+.signal-dial::after { content:'TUNE'; position:absolute; bottom:22px; width:100%; text-align:center; font-size:.7rem; letter-spacing:.15em; color:#d8c4ff; }
+#dialNeedle { position:absolute; top:10px; bottom:10px; left:calc(50% - 2px); width:4px; transform-origin:center; pointer-events:none; }
+#dialNeedle::before { content:''; display:block; height:28px; background:#e4d3ff; border-radius:4px; box-shadow:0 0 12px #bc88ff; }
+.fuel-bank { display:flex; gap:14px; justify-content:center; }
+.fuel-bank .fuel-tank { flex:1; min-width:0; font-size:.8rem; text-align:center; }
+.tank-vessel { height:120px; max-width:100px; position:relative; overflow:hidden; margin:14px auto 10px; border:2px solid var(--repair-accent); border-radius:12px 12px 20px 20px; background:repeating-linear-gradient(0deg,transparent 0 22px,#ffffff15 23px 24px),#02090c; }
+.tank-vessel i { position:absolute; bottom:0; left:0; right:0; height:0; background:linear-gradient(0deg,#b0502988,var(--repair-accent)); transition:height .08s; }
+.repair-o2 .tank-vessel i { background:linear-gradient(0deg,#167970aa,#75f4bf); }
+.tank-vessel span { position:absolute; inset:0; display:grid; place-items:center; color:white; text-shadow:0 2px 4px #000; font-size:1.5rem; font-variant-numeric:tabular-nums; }
+.fuel-tank small { letter-spacing:.02em; }
+.engine-warning { color:#ffbd99; border-left:3px solid #ff825e; padding-left:12px; }
+.lever-assembly { display:flex; align-items:center; justify-content:center; gap:24px; padding-top:20px; }
+.fuel-lever { position:relative; flex-shrink:0; width:92px; height:160px; touch-action:none; cursor:grab; user-select:none; border:1px solid #ffffff33; border-radius:10px; background:linear-gradient(90deg,#111319,#34313a,#111319); }
+.lever-track { position:absolute; width:12px; top:15px; bottom:15px; left:calc(50% - 6px); background:#030509; border:1px solid #777; border-radius:8px; }
+.lever-handle { position:absolute; bottom:0; left:4px; right:4px; height:40px; border-radius:8px; display:grid; place-items:center; background:linear-gradient(#ffb179,#bc583a); color:#211008; font-weight:900; box-shadow:0 4px 10px #000a; font-size:.85rem; }
+#engineAttemptStatus { font-size:.85rem; max-width:210px; color:#ffbd99; }
+@media(max-width:480px) { .repair-task {padding:16px;} .wire-terminal {font-size:.6rem!important;padding:6px!important;} .wire-terminal span {font-size:1.1rem;} .fuel-bank {gap:8px;} .repair-task small {font-size:.6rem;} }

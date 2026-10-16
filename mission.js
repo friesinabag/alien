@@ -12,6 +12,7 @@ function resetMission() {
     game.roleRevealId = null;
     game.rolesPending = new Set();
     game.repairChallenges = {};
+    game.repairView = null;
     game.repairImmunity = {};
     game.publicClueRound = null;
     game.timeline = [];
@@ -49,6 +50,7 @@ function beginMissionRound() {
     if (game.eventRound === game.round) return;
     game.eventRound = game.round;
     game.repairChallenges = {};
+    game.repairView = null;
     logMission("round begins", null, {text: `Flight stage ${game.stage}.`});
     game.shipEvent = null;
     if (game.round > 1 && Math.random() < 0.35) {
@@ -198,7 +200,7 @@ function renderMissionTimeline() {
 function getRepairTask(player, system) {
     const tasks = game.repairChallenges[player.id] ||= {};
     if (tasks[system]?.round === game.round) return tasks[system];
-    const values = system === "power" ? shuffle(["RED / A", "BLUE / B", "GREEN / C"]) : system === "engines" ? Array.from({length: 3}, () => 1 + Math.floor(Math.random() * 5)) : system === "o2" ? [21, 79] : shuffle([1, 2, 3, 4]);
+    const values = system === "power" ? shuffle(["RED / A", "BLUE / B", "GREEN / C"]) : system === "engines" ? Array.from({length: 3}, () => 15 + Math.floor(Math.random() * 15) * 5) : system === "o2" ? [21, 79] : [15 + Math.floor(Math.random() * 71)];
     return tasks[system] = {id: `${game.round}:${player.id}:${system}:${Math.random().toString(36).slice(2)}`, round: game.round, system, values, mistakes: 0};
 }
 
@@ -210,6 +212,15 @@ function prepareRepairTasks(player) {
 function validRepairTask(player, action) {
     const task = game.repairChallenges[player.id]?.[action.system];
     return !!task && !task.failed && task.round === game.round && task.id === action.taskId && Array.isArray(action.repairProof) && JSON.stringify(task.values) === JSON.stringify(action.repairProof);
+}
+
+function validEngineAccident(player, action) {
+    const task = game.repairChallenges[player.id]?.engines;
+    return player.role === "engineer" && action.system === "engines" && canRepairSystem("engines") &&
+        !!task && task.round === game.round && task.id === action.taskId &&
+        Array.isArray(action.attempts) && action.attempts.length === 3 && action.attempts.every(proof =>
+            Array.isArray(proof) && proof.length === 3 && proof.every(n => Number.isInteger(n) && n >= 0 && n <= 100) &&
+            JSON.stringify(proof) !== JSON.stringify(task.values));
 }
 
 function canSabotageSystem(system) {
@@ -228,71 +239,164 @@ function preparePublicBriefing() {
 function renderRepairTask(player, system) {
     const task = getRepairTask(player, system);
     game.activeRepairTask = task.id;
+    const viewId = `${task.id}:${Math.random()}`;
+    game.repairView = viewId;
     game.selectedAction = null;
     $('confirmActionButton').disabled = true;
-    const icons = {power: '⚡', engines: '🚀', o2: '🫧', communications: '📡'};
-    const titles = {power: 'Circuit junction', engines: 'Thruster alignment', o2: 'Atmosphere laboratory', communications: 'Deep-space beacon'};
+    const icons = {power:'⚡', engines:'🚀', o2:'🫧', communications:'📡'};
+    const titles = {power:'Reconnect the grid', engines:'Fuel injection manifold', o2:'Atmosphere laboratory', communications:'Signal harmonics'};
     $('actionDescription').textContent = system.toUpperCase() + ' REPAIR';
-    $('actionOptions').innerHTML = '<section id="repairTask" class="repair-task repair-' + system + '"><header><span class="repair-emblem">' + icons[system] + '</span><div><small>ENGINEERING / ' + system.toUpperCase() + '</small><h3>' + titles[system] + '</h3></div></header><div id="repairControls"></div></section><p id="repairTaskStatus" aria-live="polite"></p>';
+    $('actionOptions').innerHTML = `<section id="repairTask" class="repair-task repair-${system}"><header><span class="repair-emblem">${icons[system]}</span><div><small>ENGINEERING / ${system.toUpperCase()}</small><h3>${titles[system]}</h3></div></header>${system !== 'engines' ? '<strong id="repairClock"></strong><div class="repair-time-track"><i id="repairTimeFill"></i></div>' : '<p class="engine-warning">Two safe mistakes. A third incorrect lever pull is fatal. No time limit.</p>'}<div id="repairControls"></div></section><p id="repairTaskStatus" aria-live="polite"></p>`;
     const status = text => $('repairTaskStatus').textContent = text;
+    const active = () => game.repairView === viewId && game.round === task.round && !task.failed && !task.complete;
     const fail = () => {
         task.failed = true;
         game.selectedAction = 'none';
         $('confirmActionButton').disabled = false;
-        $('repairControls').innerHTML = '<div class="repair-outcome">✕ REPAIR FAILED<br><small>Confirm to end this turn. Try again next round.</small></div>';
-        status('System remains offline.');
+        $('repairControls').innerHTML = '<div class="repair-outcome">✕ TIME EXPIRED<br><small>System remains offline. Confirm to end this turn.</small></div>';
+        status('Repair failed. Try again next round.');
     };
-    const finish = proof => {
+    const withinTime = () => {
+        if (!active()) return false;
+        if (system !== 'engines' && Date.now() >= task.deadline) { fail(); return false; }
+        return true;
+    };
+    const finish = () => {
+        if (!withinTime()) return;
         task.complete = true;
-        game.selectedAction = {type: 'repair', system, taskId: task.id, repairProof: proof};
+        game.selectedAction = {type:'repair', system, taskId:task.id, repairProof:[...task.values]};
         $('confirmActionButton').disabled = false;
         $('repairControls').innerHTML = '<div class="repair-outcome">✓ SYSTEM SYNCHRONISED</div>';
         status('Task complete. Confirm to repair the system.');
     };
-    const mistake = () => {
-        task.mistakes++;
-        if (task.mistakes >= 3) { fail(); return false; }
-        status('Mismatch. ' + (3 - task.mistakes) + ' tries remaining.');
-        return true;
-    };
     if (task.failed) { fail(); return; }
-    if (task.complete) { finish(task.values); return; }
-    if (system === 'power' || system === 'communications') {
-        let proof = [];
-        const render = () => {
-            const options = system === 'power' ? ['RED / A', 'BLUE / B', 'GREEN / C'] : [1, 2, 3, 4];
-            $('repairControls').innerHTML = '<div class="repair-diagram">' + (system === 'power' ? '◉ ━━━ ⚡ ━━━ ◉' : '▁ ▃ ▆ █ ▆ ▃ ▁') + '</div><p>' + (system === 'power' ? 'Connect terminal ' + task.values[proof.length] : 'Transmit: ' + task.values.join(' → ')) + '</p><div class="repair-progress">' + options.map((_,i) => '<i class="' + (i < proof.length ? 'lit' : '') + '"></i>').join('') + '</div><div class="choice-grid">' + options.map(v => button(esc(v), v)).join('') + '</div>';
-            $('repairControls').querySelectorAll('button').forEach(btn => btn.onclick = () => {
-                const value = system === 'power' ? btn.dataset.value : Number(btn.dataset.value);
-                if (value !== task.values[proof.length]) { proof = []; if (mistake()) render(); return; }
-                proof.push(value);
-                if (proof.length === task.values.length) finish(proof); else render();
-            });
+    if (task.complete) {
+        game.selectedAction = {type:'repair', system, taskId:task.id, repairProof:[...task.values]};
+        $('confirmActionButton').disabled = false;
+        $('repairControls').innerHTML = '<div class="repair-outcome">✓ SYSTEM SYNCHRONISED</div>';
+        return;
+    }
+    if (system !== 'engines') {
+        task.deadline ||= Date.now() + 15000;
+        const tick = () => {
+            if (!active()) return;
+            const left = Math.max(0, task.deadline - Date.now());
+            $('repairClock').textContent = 'REPAIR WINDOW · ' + (left / 1000).toFixed(1) + 's';
+            $('repairTimeFill').style.width = (left / 15000 * 100) + '%';
+            if (!left) fail(); else setTimeout(tick, 50);
         };
-        render();
-        status((3 - task.mistakes) + ' tries remaining.');
-    } else {
-        const labels = system === 'engines' ? ['Port thruster', 'Centre thruster', 'Starboard thruster'] : ['Oxygen %', 'Nitrogen %'];
-        $('repairControls').innerHTML = '<div class="repair-diagram">' + (system === 'engines' ? '◁ ▥ ◇ ▥ ▷' : '◯ O₂ ── ◉ ── N₂ ◯') + '</div><p>' + (system === 'engines' ? 'Match the requested thrust, then test alignment.' : 'Balance breathable air before the tank empties.') + '</p><strong id="repairClock"></strong>' + labels.map((label,i) => '<label>' + label + ' · target ' + task.values[i] + '<input aria-label="' + label + '" type="range" min="0" max="' + (system === 'engines' ? 5 : 100) + '" value="0" data-dial="' + i + '"><output id="repairDial' + i + '">0</output></label>').join('') + '<button id="testRepair" type="button">' + (system === 'engines' ? 'TEST ALIGNMENT' : 'SEAL AIR MIXTURE') + '</button>';
-        const dials = [...$('repairControls').querySelectorAll('input')];
-        dials.forEach(dial => dial.oninput = () => $('repairDial' + dial.dataset.dial).textContent = dial.value);
-        $('testRepair').onclick = () => {
-            if (system === 'o2' && Date.now() >= task.deadline) { fail(); return; }
-            const proof = dials.map(d => Number(d.value));
-            if (JSON.stringify(proof) === JSON.stringify(task.values)) finish(proof);
-            else if (system === 'engines') mistake();
-            else status('Mixture unsafe. Adjust the gases before time runs out.');
+        if (Date.now() >= task.deadline) { fail(); return; }
+        tick();
+    }
+    if (system === 'power') {
+        const wires = ['RED / A','BLUE / B','GREEN / C'];
+        const colors = ['#ff7685','#72baff','#80efb1'];
+        task.connections ||= {};
+        $('repairControls').innerHTML = `<p>Drag each live wire to its matching terminal. Wrong connections spark and disconnect.</p><div id="wireBoard" class="wire-board"><svg id="wirePaths" viewBox="0 0 420 250" preserveAspectRatio="none" aria-hidden="true"></svg><div class="wire-bank">${wires.map((w,i)=>`<button type="button" class="wire-terminal" data-wire="${i}" style="--wire:${colors[i]}" aria-label="Drag ${w} wire">${w} <span>◉</span></button>`).join('')}</div><div class="wire-bank wire-destinations">${task.values.map((w,i)=>`<button type="button" class="wire-terminal" data-socket="${i}" style="--wire:${colors[wires.indexOf(w)]}" aria-label="${w} destination"><span>◉</span> ${w}</button>`).join('')}</div></div><p class="muted">Mouse / touch: drag a wire. Keyboard: select a wire, then its terminal with Enter.</p>`;
+        const board = $('wireBoard');
+        let dragging = null, preview = null;
+        const point = e => { const r=board.getBoundingClientRect(); return {x:(e.clientX-r.left)/r.width*420,y:(e.clientY-r.top)/r.height*250}; };
+        const paint = () => {
+            const curve = (i,x,y) => `<path d="M 96 ${45+i*80} C 210 ${45+i*80}, 210 ${y}, ${x} ${y}" stroke="${colors[i]}"/>`;
+            $('wirePaths').innerHTML = Object.entries(task.connections).map(([i,j])=>curve(Number(i),324,45+j*80)).join('') + (dragging !== null && preview ? curve(dragging,preview.x,preview.y) : '');
         };
-        if (system === 'o2') {
-            task.deadline ||= Date.now() + 10000;
-            const tick = () => {
-                if (task.complete || task.failed || game.activeRepairTask !== task.id || !$('repairClock') || game.round !== task.round) return;
-                const remaining = Math.max(0, task.deadline - Date.now());
-                $('repairClock').textContent = 'TANK PRESSURE · ' + (remaining / 1000).toFixed(1) + 's';
-                if (!remaining) fail(); else setTimeout(tick, 100);
+        const connect = socket => {
+            if (!withinTime() || dragging === null) return;
+            if (wires[dragging] === task.values[socket]) {
+                task.connections[dragging] = socket;
+                status(Object.keys(task.connections).length + ' / 3 wires connected.');
+            } else status('⚡ Wrong terminal. Reconnect the wire.');
+            dragging=null;preview=null;paint();
+            if (Object.keys(task.connections).length === 3) finish();
+        };
+        board.querySelectorAll('[data-wire]').forEach(el => {
+            el.onpointerdown = e => {
+                if (!withinTime()) return;
+                e.preventDefault();dragging=Number(el.dataset.wire);delete task.connections[dragging];preview=point(e);board.setPointerCapture(e.pointerId);paint();
             };
-            tick();
-        } else status((3 - task.mistakes) + ' tries remaining.');
+            el.onclick = e => { if(e.detail===0 && withinTime()) {dragging=Number(el.dataset.wire);status('Wire selected. Choose the matching terminal.');} };
+        });
+        board.querySelectorAll('[data-socket]').forEach(el => el.onclick = e => {if(e.detail===0) connect(Number(el.dataset.socket));});
+        board.onpointermove = e => {if(dragging!==null && withinTime()){preview=point(e);paint();}};
+        board.onpointerup = e => {
+            if (!withinTime() || dragging===null) return;
+            const destination = [...board.querySelectorAll('[data-socket]')].find(el=>{const r=el.getBoundingClientRect();return e.clientX>=r.left && e.clientX<=r.right && e.clientY>=r.top && e.clientY<=r.bottom;});
+            if(destination) connect(Number(destination.dataset.socket));
+            else {dragging=null;preview=null;paint();}
+        };
+        board.onpointercancel = () => {dragging=null;preview=null;if(active())paint();};
+        paint();status('Restore all three circuits before the timer expires.');
+    } else if (system === 'communications') {
+        task.tuning ??= task.values[0] < 50 ? 95 : 5;
+        $('repairControls').innerHTML = '<p>Turn the dial until the interference wave is flat. Hold a clean signal for 0.8 seconds to lock.</p><div class="signal-scope"><svg viewBox="0 0 420 150" aria-label="Live interference waveform"><path id="signalWave" fill="none" stroke="currentColor" stroke-width="3"/></svg><span id="signalQuality">SEARCHING</span></div><div id="signalDial" class="signal-dial" tabindex="0" role="slider" aria-label="Signal tuning" aria-valuemin="0" aria-valuemax="100"><i id="dialNeedle"></i></div><p class="muted">Drag around the dial or up and down. Keyboard: arrow keys.</p>';
+        const dial = $('signalDial');
+        let start=null, stableSince=null;
+        const update = value => {
+            if(!withinTime())return;
+            task.tuning=Math.max(0,Math.min(100,value));
+            dial.setAttribute('aria-valuenow',Math.round(task.tuning));
+            $('dialNeedle').style.transform=`rotate(${-135+task.tuning*2.7}deg)`;
+        };
+        dial.onpointerdown = e => {if(!withinTime())return;e.preventDefault();start={x:e.clientX,y:e.clientY,value:task.tuning};dial.setPointerCapture(e.pointerId);};
+        dial.onpointermove = e => {if(start)update(start.value+(e.clientX-start.x)*.35+(start.y-e.clientY)*.5);};
+        dial.onpointerup = dial.onpointercancel = () => {start=null;};
+        dial.onkeydown = e => {if(['ArrowUp','ArrowRight','ArrowDown','ArrowLeft'].includes(e.key)){e.preventDefault();update(task.tuning+(['ArrowUp','ArrowRight'].includes(e.key)?1:-1));}};
+        const animate = () => {
+            if(!withinTime())return;
+            const error=Math.abs(task.tuning-task.values[0]);
+            const locked=error<=1.5;
+            const amplitude=locked?0:Math.min(58,error*1.7);
+            const phase=Date.now()/160;
+            $('signalWave').setAttribute('d',Array.from({length:106},(_,i)=>`${i?'L':'M'} ${i*4} ${75+Math.sin(i*.25+phase)*amplitude}`).join(' '));
+            $('signalQuality').textContent=locked?'CLEAN SIGNAL · HOLD':'INTERFERENCE · '+Math.round(Math.max(0,100-error*2))+'% ALIGNMENT';
+            if(locked){stableSince??=Date.now();if(Date.now()-stableSince>=800){finish();return;}}else stableSince=null;
+            setTimeout(animate,40);
+        };
+        update(task.tuning);animate();status('Find the null point. Keep the waveform flat to lock the beacon.');
+    } else {
+        const engine=system==='engines';
+        task.fuel ||= [0,0,0];task.attempts ||= [];
+        const labels=engine?['Port engine','Centre engine','Starboard engine']:['Oxygen','Nitrogen'];
+        const values=engine?task.fuel:[0,0];
+        $('repairControls').innerHTML = `<p>${engine?'Set each fuel tank to its requested percentage, then drag the lever UP to inject.':'Adjust the gas valves to 21% oxygen and 79% nitrogen. The mixture seals automatically when balanced.'}</p><div class="fuel-bank">${labels.map((label,i)=>`<label class="fuel-tank">${label}<div class="tank-vessel"><i id="tankFill${i}"></i><span id="repairDial${i}">${values[i]}%</span></div><small>TARGET ${task.values[i]}%</small><input aria-label="${label} percentage" type="range" min="0" max="100" step="1" value="${values[i]}" data-dial="${i}"></label>`).join('')}</div>${engine?'<div class="lever-assembly"><div id="fuelLever" class="fuel-lever" tabindex="0" role="slider" aria-label="Lift fuel injection lever" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span class="lever-track"></span><span id="leverHandle" class="lever-handle">LIFT ↑</span></div><p id="engineAttemptStatus">Two safe mistakes remaining.<br>Drag the lever up. Keyboard: Arrow Up or Home.</p></div>':''}`;
+        const dials=[...$('repairControls').querySelectorAll('input')];
+        dials.forEach(dial=>dial.oninput=()=>{
+            if(!withinTime())return;
+            const i=Number(dial.dataset.dial);values[i]=Number(dial.value);
+            $('repairDial'+i).textContent=dial.value+'%';$('tankFill'+i).style.height=dial.value+'%';
+            if(!engine && JSON.stringify(values)===JSON.stringify(task.values))finish();
+        });
+        if(engine){
+            const lever=$('fuelLever');let pulling=false;
+            const resetLever=()=>{$('leverHandle').style.bottom='0%';lever.setAttribute('aria-valuenow','0');};
+            const submit=()=>{
+                if(!withinTime())return;
+                const proof=[...values];
+                if(JSON.stringify(proof)===JSON.stringify(task.values)){finish();return;}
+                task.attempts.push(proof);task.mistakes=task.attempts.length;
+                if(task.attempts.length===3){
+                    task.failed=true;
+                    game.selectedAction={type:'repairAccident',system:'engines',taskId:task.id,attempts:task.attempts.map(p=>[...p])};
+                    $('confirmActionButton').disabled=false;
+                    // Commit the accident immediately; there is no confirmation escape.
+                    completeAbility();return;
+                }
+                resetLever();
+                const warning=task.attempts.length===2?'DANGER: NEXT WRONG PULL IS FATAL.':'Fuel mismatch. One safe mistake remains.';
+                $('engineAttemptStatus').textContent=warning;status(warning);
+            };
+            lever.onpointerdown=e=>{if(!withinTime())return;e.preventDefault();pulling=true;lever.setPointerCapture(e.pointerId);};
+            lever.onpointermove=e=>{
+                if(!pulling||!withinTime())return;
+                const r=lever.getBoundingClientRect();const progress=Math.max(0,Math.min(1,(r.bottom-e.clientY-20)/(r.height-40)));
+                $('leverHandle').style.bottom=(progress*75)+'%';lever.setAttribute('aria-valuenow',Math.round(progress*100));
+            };
+            lever.onpointerup=e=>{if(!pulling)return;pulling=false;const progress=Number(lever.getAttribute('aria-valuenow'));if(progress>=90)submit();else if(active())resetLever();};
+            lever.onpointercancel=()=>{pulling=false;if(active())resetLever();};
+            lever.onkeydown=e=>{if(e.key==='ArrowUp'||e.key==='Home'){e.preventDefault();submit();}};
+            if(task.attempts.length) $('engineAttemptStatus').textContent=task.attempts.length===2?'DANGER: NEXT WRONG PULL IS FATAL.':'One safe mistake remains.';
+        }
+        status(engine?'Balance the tanks, then lift the injection lever.':'Balance both gases before the repair window closes.');
     }
 }
 
