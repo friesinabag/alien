@@ -1,7 +1,16 @@
 "use strict";
 
+const DEFAULT_MISSION_RULES = Object.freeze({powerSeconds:15, o2Seconds:15, communicationsSeconds:15, engineSafeMistakes:2, engineFatal:true, discussionSeconds:0, eventChance:35});
+function normalizeMissionRules(value = {}) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) value = {};
+    const number = (key, min, max) => Number.isFinite(value[key]) ? Math.max(min, Math.min(max, Math.round(value[key]))) : DEFAULT_MISSION_RULES[key];
+    return {powerSeconds:number("powerSeconds",5,60), o2Seconds:number("o2Seconds",5,60), communicationsSeconds:number("communicationsSeconds",5,60), engineSafeMistakes:number("engineSafeMistakes",1,5), engineFatal:typeof value.engineFatal === "boolean" ? value.engineFatal : true, discussionSeconds:number("discussionSeconds",0,600), eventChance:number("eventChance",0,100)};
+}
+function missionRules() { return normalizeMissionRules(game.rules || settings.rules); }
+
 // Shared mission rules. Only the online host owns hidden state.
 function resetMission() {
+    game.rules = normalizeMissionRules(settings.rules);
     game.commSilenced = new Set();
     game.commSilenceRound = null;
     game.eventRound = null;
@@ -28,7 +37,7 @@ function resetMission() {
 
 function logMission(kind, actor, details = {}) {
     if (game.mode === "online" && !online.isHost) return;
-    (game.timeline ||= []).push({round: game.round, stage: game.stage, kind, actor, ...JSON.parse(JSON.stringify(details))});
+    (game.timeline ||= []).push({round: game.round, stage: game.stage, opening:!!game.openingVote, kind, actor, ...JSON.parse(JSON.stringify(details)), snapshot:game.players.map(p => ({id:p.id, name:p.name, role:p.role, alive:p.alive, infected:p.infectionRound != null}))});
 }
 
 function isVoteSilenced(player) {
@@ -53,7 +62,7 @@ function beginMissionRound() {
     game.repairView = null;
     logMission("round begins", null, {text: `Flight stage ${game.stage}.`});
     game.shipEvent = null;
-    if (game.round > 1 && Math.random() < 0.35) {
+    if (game.round > 1 && Math.random() < missionRules().eventChance / 100) {
         const events = ["debris", "surge", "distress"];
         const event = rand(events);
         if (event === "debris") {
@@ -216,9 +225,9 @@ function validRepairTask(player, action) {
 
 function validEngineAccident(player, action) {
     const task = game.repairChallenges[player.id]?.engines;
-    return player.role === "engineer" && action.system === "engines" && canRepairSystem("engines") &&
+    return missionRules().engineFatal && player.role === "engineer" && action.system === "engines" && canRepairSystem("engines") &&
         !!task && task.round === game.round && task.id === action.taskId &&
-        Array.isArray(action.attempts) && action.attempts.length === 3 && action.attempts.every(proof =>
+        Array.isArray(action.attempts) && action.attempts.length === missionRules().engineSafeMistakes + 1 && action.attempts.every(proof =>
             Array.isArray(proof) && proof.length === 3 && proof.every(n => Number.isInteger(n) && n >= 0 && n <= 100) &&
             JSON.stringify(proof) !== JSON.stringify(task.values));
 }
@@ -238,6 +247,8 @@ function preparePublicBriefing() {
 
 function renderRepairTask(player, system) {
     const task = getRepairTask(player, system);
+    const rules = missionRules(), duration = (rules[system + 'Seconds'] || 15) * 1000;
+    const engineWarning = `${rules.engineSafeMistakes} safe ${rules.engineSafeMistakes === 1 ? 'mistake' : 'mistakes'}. A further wrong pull ${rules.engineFatal ? 'is fatal' : 'ends the repair'}. No time limit.`;
     game.activeRepairTask = task.id;
     const viewId = `${task.id}:${Math.random()}`;
     game.repairView = viewId;
@@ -246,7 +257,7 @@ function renderRepairTask(player, system) {
     const icons = {power:'⚡', engines:'🚀', o2:'🫧', communications:'📡'};
     const titles = {power:'Reconnect the grid', engines:'Fuel injection manifold', o2:'Atmosphere laboratory', communications:'Signal harmonics'};
     $('actionDescription').textContent = system.toUpperCase() + ' REPAIR';
-    $('actionOptions').innerHTML = `<section id="repairTask" class="repair-task repair-${system}"><header><span class="repair-emblem">${icons[system]}</span><div><small>ENGINEERING / ${system.toUpperCase()}</small><h3>${titles[system]}</h3></div></header>${system !== 'engines' ? '<strong id="repairClock"></strong><div class="repair-time-track"><i id="repairTimeFill"></i></div>' : '<p class="engine-warning">Two safe mistakes. A third incorrect lever pull is fatal. No time limit.</p>'}<div id="repairControls"></div></section><p id="repairTaskStatus" aria-live="polite"></p>`;
+    $('actionOptions').innerHTML = `<section id="repairTask" class="repair-task repair-${system}"><header><span class="repair-emblem">${icons[system]}</span><div><small>ENGINEERING / ${system.toUpperCase()}</small><h3>${titles[system]}</h3></div></header>${system !== 'engines' ? '<strong id="repairClock"></strong><div class="repair-time-track"><i id="repairTimeFill"></i></div>' : '<p class="engine-warning">' + engineWarning + '</p>'}<div id="repairControls"></div></section><p id="repairTaskStatus" aria-live="polite"></p>`;
     const status = text => $('repairTaskStatus').textContent = text;
     const active = () => game.repairView === viewId && game.round === task.round && !task.failed && !task.complete;
     const fail = () => {
@@ -277,12 +288,12 @@ function renderRepairTask(player, system) {
         return;
     }
     if (system !== 'engines') {
-        task.deadline ||= Date.now() + 15000;
+        task.deadline ||= Date.now() + duration;
         const tick = () => {
             if (!active()) return;
             const left = Math.max(0, task.deadline - Date.now());
             $('repairClock').textContent = 'REPAIR WINDOW · ' + (left / 1000).toFixed(1) + 's';
-            $('repairTimeFill').style.width = (left / 15000 * 100) + '%';
+            $('repairTimeFill').style.width = (left / duration * 100) + '%';
             if (!left) fail(); else setTimeout(tick, 50);
         };
         if (Date.now() >= task.deadline) { fail(); return; }
@@ -374,15 +385,20 @@ function renderRepairTask(player, system) {
                 const proof=[...values];
                 if(JSON.stringify(proof)===JSON.stringify(task.values)){finish();return;}
                 task.attempts.push(proof);task.mistakes=task.attempts.length;
-                if(task.attempts.length===3){
+                if(task.attempts.length===rules.engineSafeMistakes+1){
                     task.failed=true;
+                    if (!rules.engineFatal) {
+                        game.selectedAction='none';$('confirmActionButton').disabled=false;
+                        $('repairControls').innerHTML='<div class="repair-outcome">REPAIR ABORTED<br><small>You survived. Engines remain offline. Confirm to end your turn.</small></div>';
+                        status('Fuel safety lock engaged.');return;
+                    }
                     game.selectedAction={type:'repairAccident',system:'engines',taskId:task.id,attempts:task.attempts.map(p=>[...p])};
                     $('confirmActionButton').disabled=false;
                     // Commit the accident immediately; there is no confirmation escape.
                     completeAbility();return;
                 }
                 resetLever();
-                const warning=task.attempts.length===2?'DANGER: NEXT WRONG PULL IS FATAL.':'Fuel mismatch. One safe mistake remains.';
+                const warning=task.attempts.length===rules.engineSafeMistakes ? (rules.engineFatal ? 'DANGER: NEXT WRONG PULL IS FATAL.' : 'NEXT WRONG PULL ENDS THIS REPAIR.') : `Fuel mismatch. ${rules.engineSafeMistakes-task.attempts.length} safe mistakes remain.`;
                 $('engineAttemptStatus').textContent=warning;status(warning);
             };
             lever.onpointerdown=e=>{if(!withinTime())return;e.preventDefault();pulling=true;lever.setPointerCapture(e.pointerId);};
@@ -394,7 +410,7 @@ function renderRepairTask(player, system) {
             lever.onpointerup=e=>{if(!pulling)return;pulling=false;const progress=Number(lever.getAttribute('aria-valuenow'));if(progress>=90)submit();else if(active())resetLever();};
             lever.onpointercancel=()=>{pulling=false;if(active())resetLever();};
             lever.onkeydown=e=>{if(e.key==='ArrowUp'||e.key==='Home'){e.preventDefault();submit();}};
-            if(task.attempts.length) $('engineAttemptStatus').textContent=task.attempts.length===2?'DANGER: NEXT WRONG PULL IS FATAL.':'One safe mistake remains.';
+            $('engineAttemptStatus').textContent=task.attempts.length === rules.engineSafeMistakes ? (rules.engineFatal ? 'DANGER: NEXT WRONG PULL IS FATAL.' : 'NEXT WRONG PULL ENDS THIS REPAIR.') : `${rules.engineSafeMistakes-task.attempts.length} safe mistakes remaining. Lift the lever to submit fuel. Keyboard: Arrow Up or Home.`;
         }
         status(engine?'Balance the tanks, then lift the injection lever.':'Balance both gases before the repair window closes.');
     }
@@ -494,7 +510,7 @@ async function sendRecoveryState(playerId) {
     if (!player) return;
     const packet = online.lastPackets?.[playerId];
     const active = game.initialRoleReveal && game.rolesPending.has(playerId) ? initialRolePacket(player) : online.activeTurn?.playerId === playerId && packet?.turnId === online.activeTurn.id ? packet : null;
-    await sendPrivate(connectionForPlayer(playerId).connectionId, {type: "private_sync", started: online.started, round: game.round, stage: game.stage, shipEvent: game.shipEvent, systems: game.systems, o2RoundsRemaining: game.o2RoundsRemaining, roster: game.players.map(p => ({id: p.id, name: p.name, alive: p.alive})), role: player.role, originalRole: player.originalRole, objectiveProgress: objectiveProgress(player), phase: online.phase, paused: online.paused, prompt: active, gameOver: game.gameOver, finalResult: online.finalResult, voteResult: online.voteResult, lifelineState: online.lifelineState, timeline: game.gameOver ? game.timeline : undefined, results: game.lastRoundResults});
+    await sendPrivate(connectionForPlayer(playerId).connectionId, {type: "private_sync", started: online.started, round: game.round, stage: game.stage, shipEvent: game.shipEvent, systems: game.systems, o2RoundsRemaining: game.o2RoundsRemaining, roster: game.players.map(p => ({id: p.id, name: p.name, alive: p.alive})), role: player.role, originalRole: player.originalRole, objectiveProgress: objectiveProgress(player), phase: online.phase, publicPhase: online.publicPhase, rules:missionRules(), paused: online.paused, prompt: active, gameOver: game.gameOver, finalResult: online.finalResult, voteResult: online.voteResult, lifelineState: online.lifelineState, timeline: game.gameOver ? game.timeline : undefined, results: game.lastRoundResults});
 }
 
 function renderRecoveredSystems() {

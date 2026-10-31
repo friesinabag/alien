@@ -143,7 +143,7 @@ const ROLE_DATA = {
         name: "Engineer",
         team: "Human",
         desc:
-            "Repair 1 offline ship system each round, starting the round after it was sabotaged. Repaired systems resist sabotage through the next round. O2, Power and Communications have 15-second tasks. Engines allow two safe mistakes; a third wrong lever pull kills you. Engineer can act even while Power is offline."
+            "Repair 1 offline ship system each round, starting the round after it was sabotaged. Repaired systems resist sabotage through the next round. Repair timers and engine penalties follow the host's rules. Standard rules: 15-second timed tasks and two safe engine mistakes before a fatal wrong lever pull. Engineer can act even while Power is offline."
     },
 
     scientist: {
@@ -2051,9 +2051,9 @@ function applyImmediateAction(
     if (action.type === "repairAccident" && validEngineAccident(player, action)) {
         player.alive = false;
         game.repairChallenges[player.id].engines.failed = true;
-        game.reactionInfo[player.id] = "You died in an engine repair accident after three incorrect fuel submissions.";
+        game.reactionInfo[player.id] = `You died in an engine repair accident after ${action.attempts.length} incorrect fuel submissions.`;
         game.lastRoundResults.push(`${realName(player.id)} died in an engine repair accident. Engines remain offline.`);
-        logMission("engine repair death", player.id, {text: "Three incorrect fuel submissions caused a fatal engine overload."});
+        logMission("engine repair death", player.id, {text: `${action.attempts.length} incorrect fuel submissions caused a fatal engine overload.`});
         return;
     }
 
@@ -3319,7 +3319,6 @@ function completeEjection(
     byCaptain
 ) {
 
-    logMission("vote outcome", null, {target: id || "skip", text: byCaptain ? "Captain tie-break" : "Final vote outcome"});
     online.phase = "vote_result";
     const ejectedName = id ? displayName(id) : "";
     game.displaySwap = null;
@@ -3361,6 +3360,7 @@ function completeEjection(
         }
     }
 
+    logMission("vote outcome", null, {target:id || "skip", text:id ? `${realName(id)} was voted out${byCaptain ? " by the Captain" : ""}.` : "Nobody was voted out."});
     online.voteResult = {title: $("voteResultTitle").textContent, message: $("voteResultMessage").textContent};
     if (!game.gameOver && settleVoteObjectives(id)) return;
     if (!game.gameOver && checkFinalTwoJesterVictory()) return;
@@ -5227,6 +5227,7 @@ async function subscribePublicRoom() {
    ========================================================= */
 
 function onlineBroadcast(data) {
+    if (online.isHost && online.started) data = {...data, rules:missionRules()};
 
     if (
         !online.channel ||
@@ -6051,6 +6052,7 @@ function handleOnlinePrivateMessage(
 }
 
 function receivePrivateGameData(data) {
+    if (!online.isHost && data.rules) game.rules = normalizeMissionRules(data.rules);
     if (data.type === "private_sync") { applyRecoveryState(data); return; }
     if (game.gameOver && data.type.startsWith("private_")) return;
     if (data.round) game.round = data.round;
@@ -6314,7 +6316,7 @@ async function sendPrivateToPlayer(playerId, data) {
     const connection = connectionForPlayer(playerId);
     if (!connection) return;
     const turnTypes = ["private_action", "private_reaction", "private_vote", "private_captain", "private_judge"];
-    const payload = {...data, round: game.round, stage: game.stage};
+    const payload = {...data, round: game.round, stage: game.stage, rules:missionRules()};
     if (turnTypes.includes(data.type)) {
         online.turnSequence = (online.turnSequence || 0) + 1;
         payload.turnId = `${data.type}:${game.round}:${playerId}:${online.turnSequence}`;
@@ -7393,6 +7395,7 @@ $("roundResults").innerHTML =
 function handleOnlinePublicUpdate(
     data
 ) {
+    if (!online.isHost && data.rules) game.rules = normalizeMissionRules(data.rules);
 
     if (!online.isHost && Object.prototype.hasOwnProperty.call(data, "displaySwap")) game.displaySwap = data.displaySwap;
     if (data.round) {

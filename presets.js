@@ -24,6 +24,7 @@ function captureSetupPreset(name) {
         version: 1, name, playerCount: game.players.length,
         assignmentMode: setupMode, roundComposition,
         enabled: {...settings.enabled}, counts: {...settings.counts},
+        rules: normalizeMissionRules(settings.rules),
         assignments: setupMode === "manual" ? game.players.map((_, i) => game.randomRoles[i] || null) : []
     };
 }
@@ -49,7 +50,7 @@ function applySetupPreset(preset) {
         throw new Error(`The host needs ${preset.playerCount} connected crew positions to load this preset.`);
     }
     // Validate everything before changing the current setup. Keep names and online identities.
-    settings = {enabled, counts};
+    settings = {enabled, counts, rules:normalizeMissionRules(preset.rules)};
     if (game.mode !== "online" && game.players.length !== preset.playerCount) {
         const names = game.players.map(p => p.name);
         $("playerCount").value = String(preset.playerCount);
@@ -70,6 +71,7 @@ function applySetupPreset(preset) {
         : "Roles stay secret. Mixed games have a 20% chance of an all-good red herring.";
     renderSetup();
     renderCustomRoles();
+    if (typeof renderHostRules === 'function') renderHostRules();
 }
 
 function initSetupPresets() {
