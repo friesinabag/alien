@@ -175,7 +175,7 @@ const ROLE_DATA = {
         name: "Captain",
         team: "Human",
         desc:
-            "If the vote ties, secretly choose which tied player is ejected. Power must be online."
+            "A tie between players ejects nobody. On your next normal ability turn, you may eject any other living player during the night. The authorization lasts for that night only. Power and freedom from blocks are required. Skip-led votes grant no authorization."
     },
 
     guard: {
@@ -207,7 +207,7 @@ const ROLE_DATA = {
         name: "Judge",
         team: "Human",
         desc:
-            "Once per game, cancel ANY vote ejection. This includes normal majority ejections and Captain tie-breaker ejections."
+            "During your normal ability turn, secretly arm a pardon for this round's vote. Once per game, it automatically cancels a player ejection. If nobody would be ejected, your pardon remains unused. Power and freedom from blocks are required. Night ejections cannot be pardoned."
     },
 
     jester: {
@@ -236,7 +236,7 @@ const ROLE_DATA = {
 
     bountyhunter: {
         icon: "🎯", name: "Bounty Hunter", team: "Neutral",
-        desc: "Mark another player once, at the start of the game. Win if they are voted out while you are alive. A kill does not count; you cannot change your target."
+        desc: "During your normal turn in round 1, mark another player once. Win if they are voted out while you are alive. A kill does not count; you cannot change your target."
     },
     oracle: {
         icon: "🔮", name: "Oracle", team: "Neutral",
@@ -244,7 +244,7 @@ const ROLE_DATA = {
     },
     technician: {
         icon: "🔋", name: "Technician", team: "Human",
-        desc: "Give another player backup power for this round, allowing their ability to work while Power is offline. You act before regular ability turns and can work during a blackout. Backup power does not bypass a Guard block."
+        desc: "Harden one ship system against one sabotage attempt next round. The protection expires after that round and can be installed while Power is offline. You take your normal turn; Guard blocks still apply."
     },
     analyst: {
         icon: "📡", name: "Analyst", team: "Human",
@@ -409,7 +409,6 @@ let game = {
 
     displaySwap: null,
 
-    judgeUsed: false,
 
 systems: {
     engines: true,
@@ -543,7 +542,7 @@ function canAct(player) {
 
     if (
         player.role === "judge" &&
-        game.judgeUsed
+        player.judgeUsed
     ) {
         return false;
     }
@@ -600,6 +599,7 @@ function resetTransient() {
 
     game.actions = {};
     game.backupPowered = new Set();
+    game.judgePardons = new Set();
     game.investigationResults = {};
     game.oraclePredictions = {};
     game.objectiveVoteRound = null;
@@ -944,7 +944,6 @@ function startGame() {
 
     game.lifelineNumber = 0;
 
-    game.judgeUsed = false;
 
     game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; p.bountyTarget = null; p.bountyFailed = false; p.oracleCorrect = 0; p.oraclePlayerCorrect = false; p.lastOracleResult = null; });
     game.sabotagedAt = {};
@@ -1297,7 +1296,7 @@ function showAction() {
 
     if (player.role === "bountyhunter") renderTargetChoices(player, "bounty");
     else if (player.role === "oracle") renderOracleChoices(player);
-    else if (player.role === "technician") renderTargetChoices(player, "backup");
+    else if (player.role === "technician") renderHardeningChoices();
     else if (player.role === "analyst") renderTargetChoices(player, "analyse");
     else if (player.role === "alien") {
 
@@ -1536,11 +1535,8 @@ function showAction() {
         player.role === "captain"
     ) {
 
-        $("actionDescription").textContent =
-            "Your ability activates automatically if the vote ties.";
-
-        game.selectedAction =
-            "none";
+        if (player.captainWarrantRound === game.round) renderTargetChoices(player, "captain_eject");
+        else { $("actionDescription").textContent = "No night ejection is authorized. A player-vote tie grants a private choice on your next normal ability turn."; game.selectedAction = "none"; }
     }
 
     /*
@@ -1551,11 +1547,7 @@ function showAction() {
         player.role === "judge"
     ) {
 
-        $("actionDescription").textContent =
-            "If a player would be ejected, you may be asked whether to cancel the ejection.";
-
-        game.selectedAction =
-            "none";
+        renderPardonChoices();
     }
 
     /*
@@ -1610,7 +1602,7 @@ function renderTargetChoices(
 
     const descriptions = {
         bounty: "Choose your bounty once. You win if they are voted out while you are alive; kills do not count.",
-        backup: "Choose another player to receive backup power for this round.",
+        captain_eject: "Choose any other living player to eject during the night. This bypasses Medic protection and Judge pardons. You may pass instead.",
         analyse: "Choose another player whose investigative result you will receive privately.",
 
         kill:
@@ -1637,7 +1629,7 @@ function renderTargetChoices(
         "Choose a player.";
 
     $("actionOptions").innerHTML =
-        targetOptions(player, ["bounty", "backup", "analyse"].includes(action) ? player.id : null)
+        targetOptions(player, ["bounty", "captain_eject", "analyse"].includes(action) ? player.id : null)
             .map(
                 option =>
                     button(
@@ -1645,7 +1637,7 @@ function renderTargetChoices(
                         option.id
                     )
             )
-            .join("");
+            .join("") + (action === "captain_eject" ? button("PASS · NO NIGHT EJECTION", "__pass__") : "");
 
     $("actionOptions")
         .querySelectorAll("button")
@@ -1654,7 +1646,7 @@ function renderTargetChoices(
             btn.onclick = () => {
 
                 game.selectedAction =
-                    JSON.stringify({
+                    btn.dataset.value === "__pass__" ? "none" : JSON.stringify({
                         type: action,
                         target:
                             btn.dataset.value
@@ -1684,13 +1676,11 @@ function canRepairSystem(system) {
 }
 
 function abilityOrder(ids) {
-    // Support is granted before the recipient needs to use it.
-    const priority = id => ["technician", "bountyhunter"].includes(getPlayer(id)?.role) ? 0 : 1;
-    return [...ids].sort((a, b) => priority(a) - priority(b));
+    // Never inspect roles here: every ability uses the ordinary crew order.
+    return [...ids];
 }
 
 function privateInvestigation(player, message) {
-    logMission("private result", player.id, {text: message});
     logMission("private result", player.id, {text: message});
     game.investigationResults[player.id] = message;
     game.reactionInfo[player.id] = message;
@@ -1734,7 +1724,7 @@ function settleVoteObjectives(ejectedId) {
 }
 
 function renderOracleChoices(player) {
-    $("actionDescription").textContent = `${player.lastOracleResult?.message || "Predict the final ejection after Captain and Judge decisions."} Progress: ${player.oracleCorrect || 0} / 3. At least one correct player ejection is required.`;
+    $("actionDescription").textContent = `${player.lastOracleResult?.message || "Predict the final vote result, including an automatic Judge pardon. Night ejections do not count."} Progress: ${player.oracleCorrect || 0} / 3. At least one correct player ejection is required.`;
     $("actionOptions").innerHTML = [...living().map(p => button(esc(displayName(p.id)), p.id)), button("NO EJECTION", "skip")].join("");
     $("actionOptions").querySelectorAll("button").forEach(btn => {
         btn.onclick = () => {
@@ -2069,9 +2059,19 @@ function applyImmediateAction(
         game.reactionInfo[player.id] = "ORACLE: Your prediction is sealed until the vote resolves.";
         return;
     }
-    if (action.type === "backup" && player.role === "technician" && alive(getPlayer(action.target)) && action.target !== player.id) {
-        game.backupPowered.add(action.target);
-        game.reactionInfo[player.id] = `TECHNICIAN: Backup power supplied to ${displayName(action.target)} for this round.`;
+    if (action.type === "harden" && player.role === "technician" && Object.prototype.hasOwnProperty.call(game.systems,action.system)) {
+        (game.systemHardening ||= []).push({system:action.system,round:game.round+1,actor:player.id});
+        game.reactionInfo[player.id] = 'TECHNICIAN: '+action.system.toUpperCase()+' is hardened against one sabotage in round '+(game.round+1)+'.';
+        return;
+    }
+    if (action.type === "captain_eject" && player.role === "captain" && player.captainWarrantRound === game.round && action.target !== player.id && alive(getPlayer(action.target))) {
+        player.captainWarrantRound = null;
+        game.reactionInfo[player.id] = 'CAPTAIN: Your night ejection order has been submitted.';
+        return;
+    }
+    if (action.type === "pardon" && player.role === "judge" && !player.judgeUsed) {
+        game.judgePardons.add(player.id);
+        game.reactionInfo[player.id] = 'JUDGE: A pardon is armed for this vote. It is consumed only if it prevents an ejection.';
         return;
     }
     if (action.type === "analyse" && player.role === "analyst") return;
@@ -2136,6 +2136,7 @@ game.reactionInfo[player.id] =
             canSabotageSystem(action.system)
         ) {
 
+           if (consumeSystemHardening(action.system, player)) return;
            game.lastRoundResults.push(`SABOTAGE: ${action.system.toUpperCase()} is offline.`);
            game.sabotagedAt[action.system] = game.round;
            game.systems[action.system] =
@@ -2449,7 +2450,7 @@ function detectiveMessage(
     }
 
     if (
-        previous.type === "kill"
+        previous.type === "kill" || previous.type === "captain_eject"
     ) {
 
         return `DETECTIVE: ${target.name} interacted with a player last round.`;
@@ -2463,7 +2464,7 @@ function detectiveMessage(
     }
 
     if (
-        previous.type === "repair"
+        previous.type === "repair" || previous.type === "harden"
     ) {
 
         return `DETECTIVE: ${target.name} interacted with a ship system last round.`;
@@ -2534,7 +2535,7 @@ function randomRadioMessage() {
         const names = shuffle([suspect, ...shuffle(crew.filter(p => p.id !== suspect.id)).slice(0, clueSize - 1)]).map(p => displayName(p.id));
         messages.push(`EARTH: ${names.join(", ")} — at least one is hostile.`);
     }
-    const interaction = crew.filter(p => ["repair", "sabotage"].includes(game.previousActions[p.id]?.type));
+    const interaction = crew.filter(p => ["repair", "sabotage", "harden"].includes(game.previousActions[p.id]?.type));
     if (interaction.length) messages.push(`EARTH: ${displayName(rand(interaction).id)} interacted with a ship system last round.`);
     return rand(messages);
 }
@@ -2550,11 +2551,13 @@ function resolveAbilities() {
        have been determined.
     */
 
+    // Night eliminations are simultaneous: a submitted order does not gain priority from roster position.
+    const nightActors = new Set(living().map(p => p.id));
     const killActions =
         Object.entries(game.actions)
             .filter(
                 ([, action]) =>
-                    action.type === "kill"
+                    action.type === "kill" || action.type === "captain_eject"
             );
 
     for (
@@ -2571,7 +2574,7 @@ function resolveAbilities() {
         if (
             !actor ||
             !target ||
-            !alive(actor) ||
+            !nightActors.has(actor.id) ||
             !alive(target)
         ) {
             continue;
@@ -2585,6 +2588,14 @@ function resolveAbilities() {
             continue;
         }
 
+        if (action.type === "captain_eject") {
+            if (actor.role !== "captain") continue;
+            target.alive = false;
+            logMission("night ejection",actor.id,{target:target.id,text:realName(target.id)+' was ejected by a private Captain order.'});
+            game.reactionInfo[target.id] = 'You were ejected during the night.';
+            game.lastRoundResults.push(displayName(target.id)+' was ejected during the night.');
+            continue;
+        }
         if (
             game.protectedPlayers.has(
                 target.id
@@ -3027,296 +3038,44 @@ function confirmVote() {
    ========================================================= */
 
 function resolveVoting() {
-
     if (resolveAllClear()) return;
     const tally = {};
-
-    Object.entries(game.votes)
-        .filter(([id]) => alive(getPlayer(id)) && !isVoteSilenced(getPlayer(id)))
-        .map(([, vote]) => vote)
-        .forEach(vote => {
-
-            if (
-                vote === "allclear"
-            ) {
-                return;
-            }
-
-            tally[vote] =
-                (tally[vote] || 0) + 1;
-        });
-
-    const max =
-        Math.max(
-            0,
-            ...Object.values(tally)
-        );
-
-    const tied =
-        Object.keys(tally)
-            .filter(
-                id =>
-                    tally[id] === max &&
-                    max > 0
-            );
-
-    /*
-       No votes.
-    */
-
-    // Skip is a ballot for no ejection and wins ties against player ballots.
-    if (!tied.length || tied.includes("skip")) {
-
-        finishEjection(
-            null,
-            false
-        );
-
-        return;
+    for (const [id,vote] of Object.entries(game.votes)) {
+        if (!alive(getPlayer(id)) || isVoteSilenced(getPlayer(id)) || vote === 'allclear') continue;
+        tally[vote] = (tally[vote] || 0) + 1;
     }
-
-    /*
-       One clear winner.
-    */
-
-    if (tied.length === 1) {
-
-        finishEjection(
-            tied[0],
-            false
-        );
-
-        return;
-    }
-
-    /*
-       Tie.
-
-       Captain gets first chance.
-    */
-
-    const captain =
-        living().find(
-            player =>
-                player.role === "captain" &&
-                game.systems.power &&
-                !game.blockedPlayers.has(
-                    player.id
-                )
-        );
-
-    if (captain) {
-
-        showCaptainTie(
-            tied,
-            captain
-        );
-
-        return;
-    }
-
-    /*
-       No Captain -> no ejection.
-    */
-
-    finishEjection(
-        null,
-        false
-    );
+    const max = Math.max(0,...Object.values(tally));
+    const tied = Object.keys(tally).filter(id=>tally[id]===max && max>0);
+    if (!tied.length || tied.includes('skip')) { finishEjection(null,false); return; }
+    if (tied.length===1) { finishEjection(tied[0],false); return; }
+    grantCaptainNightOrders();
+    finishEjection(null,false);
 }
 
+// Retired vote-time prompts: never single out a role during the public vote.
 
-/* =========================================================
-   CAPTAIN TIE
-   ========================================================= */
+function showCaptainTie() { return; }
 
-function showCaptainTie(
-    tied,
-    captain
-) {
+function showJudgePrompt() { return; }
 
-    $("captainTieOptions").innerHTML =
-        `
-            <p>
-                ${
-                    esc(captain.name)
-                },
-                choose one tied player to eject.
-            </p>
-
-            ${
-                tied
-                    .map(
-                        id =>
-                            button(
-                                esc(
-                                    displayName(id)
-                                ),
-                                id
-                            )
-                    )
-                    .join("")
-            }
-        `;
-
-    $("captainTieOptions")
-        .querySelectorAll("button")
-        .forEach(btn => {
-
-            btn.onclick = () => {
-
-                finishEjection(
-                    btn.dataset.value,
-                    true
-                );
-            };
-        });
-
-    setScreen(
-        "captainTieScreen"
-    );
+function finishEjection(id, byCaptain) {
+    if (id) {
+        const judge = living().find(p=>p.role==='judge' && !p.judgeUsed && game.judgePardons.has(p.id) && canAct(p));
+        if (judge) {
+            judge.judgeUsed = true;
+            game.judgePardons.delete(judge.id);
+            logMission('pardon',judge.id,{target:id,text:'A privately armed pardon prevented the vote ejection of '+realName(id)+'.'});
+            completeEjection(null,false,'pardon');
+            return;
+        }
+    }
+    completeEjection(id,byCaptain);
 }
-
-
-/* =========================================================
-   JUDGE
-   ========================================================= */
-
-function showJudgePrompt(
-    ejectionId,
-    byCaptain
-) {
-
-    const judge =
-        living().find(
-            player =>
-                player.role === "judge" &&
-                !game.judgeUsed &&
-                game.systems.power &&
-                !game.blockedPlayers.has(
-                    player.id
-                )
-        );
-
-    if (!judge) {
-
-        completeEjection(
-            ejectionId,
-            byCaptain
-        );
-
-        return;
-    }
-
-    game.pendingEjection = {
-        id: ejectionId,
-        byCaptain
-    };
-
-    game.pendingJudge = true;
-
-    if (game.mode === "online" && online.isHost) {
-        sendPrivateToPlayer(judge.id, {type: "private_judge", target: ejectionId, targetName: displayName(ejectionId)});
-        return;
-    }
-    $("judgeDescription").textContent =
-        `The vote would eject ${displayName(ejectionId)}. Do you want to cancel the ejection?`;
-
-    $("judgeCancelButton").onclick =
-        () => {
-
-            game.judgeUsed = true;
-
-            game.pendingJudge = false;
-            if (settleVoteObjectives(null)) return;
-
-            $("voteResultTitle").textContent =
-                "EJECTION CANCELLED";
-
-            $("voteResultMessage").textContent =
-                "The Judge cancelled the ejection. Nobody was voted out.";
-
-            $("afterVoteButton").onclick =
-                afterVoting;
-
-            setScreen(
-                "voteResultScreen"
-            );
-        };
-
-    $("judgeAllowButton").onclick =
-        () => {
-
-            game.pendingJudge = false;
-
-            completeEjection(
-                ejectionId,
-                byCaptain
-            );
-        };
-
-    setScreen("judgeScreen");
-}
-
-
-/* =========================================================
-   FINISH EJECTION
-   ========================================================= */
-
-function finishEjection(
-    id,
-    byCaptain
-) {
-
-    if (!id) {
-
-        completeEjection(
-            null,
-            false
-        );
-
-        return;
-    }
-
-    /*
-       Judge can cancel ANY ejection.
-
-       This includes:
-       - normal majority
-       - Captain tie-breaker
-    */
-
-    const judge =
-        living().find(
-            player =>
-                player.role === "judge" &&
-                !game.judgeUsed &&
-                game.systems.power &&
-                !game.blockedPlayers.has(
-                    player.id
-                )
-        );
-
-    if (judge) {
-
-        showJudgePrompt(
-            id,
-            byCaptain
-        );
-
-        return;
-    }
-
-    completeEjection(
-        id,
-        byCaptain
-    );
-}
-
 
 function completeEjection(
     id,
-    byCaptain
+    byCaptain,
+    reason = null
 ) {
 
     online.phase = "vote_result";
@@ -3326,10 +3085,10 @@ function completeEjection(
     if (!id) {
 
         $("voteResultTitle").textContent =
-            "NO EJECTION";
+            reason === "pardon" ? "EJECTION CANCELLED" : "NO EJECTION";
 
         $("voteResultMessage").textContent =
-            "Nobody was voted out.";
+            reason === "pardon" ? "An emergency pardon prevented the ejection. Nobody was voted out." : "Nobody was voted out.";
 
     } else {
 
@@ -3360,7 +3119,7 @@ function completeEjection(
         }
     }
 
-    logMission("vote outcome", null, {target:id || "skip", text:id ? `${realName(id)} was voted out${byCaptain ? " by the Captain" : ""}.` : "Nobody was voted out."});
+    logMission("vote outcome", null, {target:id || "skip", text:id ? `${realName(id)} was voted out${byCaptain ? " by the Captain" : ""}.` : reason === "pardon" ? "An emergency pardon prevented the vote ejection." : "Nobody was voted out."});
     online.voteResult = {title: $("voteResultTitle").textContent, message: $("voteResultMessage").textContent};
     if (!game.gameOver && settleVoteObjectives(id)) return;
     if (!game.gameOver && checkFinalTwoJesterVictory()) return;
@@ -3891,7 +3650,6 @@ function resetGameForNewLocalGame() {
     resetMission();
     game.displaySwap = null;
 
-    game.judgeUsed = false;
 
     game.systems = {
         engines: true,
@@ -3980,7 +3738,6 @@ function resetGameForOnlineLobby() {
     resetMission();
     game.displaySwap = null;
 
-    game.judgeUsed = false;
 
     game.systems = {
         engines: true,
@@ -5912,7 +5669,6 @@ if (
 
     game.lifelineNumber = 0;
 
-    game.judgeUsed = false;
 
     game.players.forEach(p => { p.tricksterUsed = false; p.lastSilenceRound = null; p.bountyTarget = null; p.bountyFailed = false; p.oracleCorrect = 0; p.oraclePlayerCorrect = false; p.lastOracleResult = null; });
     game.sabotagedAt = {};
@@ -6052,6 +5808,7 @@ function handleOnlinePrivateMessage(
 }
 
 function receivePrivateGameData(data) {
+    if (["private_captain","private_judge"].includes(data.type)) return;
     if (!online.isHost && data.rules) game.rules = normalizeMissionRules(data.rules);
     if (data.type === "private_sync") { applyRecoveryState(data); return; }
     if (game.gameOver && data.type.startsWith("private_")) return;
@@ -6227,7 +5984,7 @@ function handleHostPrivateRequest(
     if (data.type === "role_ready") { acknowledgeOnlineRole(player, data.roleRevealId); return; }
     if (data.type === "sync_request") { sendRecoveryState(player.id); return; }
     if (online.paused) return;
-    const prompts = {ability_action: "private_action", reaction_ready: "private_reaction", vote: "private_vote", captain_choice: "private_captain", judge_choice: "private_judge"};
+    const prompts = {ability_action: "private_action", reaction_ready: "private_reaction", vote: "private_vote"};
     if (prompts[data.type]) {
         const turn = online.activeTurn;
         if (!turn || turn.playerId !== player.id || turn.type !== prompts[data.type] || turn.id !== data.turnId || data.round !== game.round) return;
@@ -6313,9 +6070,10 @@ function connectionForPlayer(
 
 
 async function sendPrivateToPlayer(playerId, data) {
+    if (["private_captain","private_judge"].includes(data.type)) return;
     const connection = connectionForPlayer(playerId);
     if (!connection) return;
-    const turnTypes = ["private_action", "private_reaction", "private_vote", "private_captain", "private_judge"];
+    const turnTypes = ["private_action", "private_reaction", "private_vote"];
     const payload = {...data, round: game.round, stage: game.stage, rules:missionRules()};
     if (turnTypes.includes(data.type)) {
         online.turnSequence = (online.turnSequence || 0) + 1;
@@ -6466,6 +6224,8 @@ function onlineShowPrivateAction(data = {}) {
         player.hasInfected = !!data.hasInfected;
         player.bountyTarget = data.bountyTarget || null;
         player.bountyFailed = !!data.bountyFailed;
+        player.captainWarrantRound = data.captainWarrantRound ?? null;
+        player.judgeUsed = !!data.judgeUsed;
         player.oracleCorrect = data.oracleCorrect || 0;
         player.oraclePlayerCorrect = !!data.oraclePlayerCorrect;
         player.lastOracleResult = data.lastOracleResult || null;
@@ -6586,7 +6346,7 @@ function validateAction(
         case "oracle":
             return action.type === "predict" && !game.oraclePredictions[player.id] && (action.target === "skip" || alive(getPlayer(action.target)));
         case "technician":
-            return action.type === "backup" && action.target !== player.id && alive(getPlayer(action.target));
+            return action.type === "harden" && Object.prototype.hasOwnProperty.call(game.systems,action.system);
         case "analyst":
             return action.type === "analyse" && action.target !== player.id && alive(getPlayer(action.target));
 
@@ -6775,19 +6535,11 @@ function validateAction(
 
 
         case "captain":
-
-            return (
-                action.type ===
-                "none"
-            );
+            return action.type === "captain_eject" && player.captainWarrantRound === game.round && action.target !== player.id && alive(getPlayer(action.target));
 
 
         case "judge":
-
-            return (
-                action.type ===
-                "none"
-            );
+            return action.type === "pardon" && !player.judgeUsed && !game.judgePardons.has(player.id);
 
 
         case "trickster":
@@ -6897,6 +6649,8 @@ function onlineHostSendNextAbility() {
             backupPowered: game.backupPowered.has(player.id),
             repairImmunity: game.repairImmunity,
             sabotagedAt: game.sabotagedAt,
+            captainWarrantRound: player.role === 'captain' ? player.captainWarrantRound : undefined,
+            judgeUsed: player.role === 'judge' ? !!player.judgeUsed : undefined,
             bountyTarget: player.bountyTarget,
             bountyFailed: player.bountyFailed,
             oracleCorrect: player.oracleCorrect,
@@ -7442,220 +7196,13 @@ function handleOnlinePublicUpdate(
    ONLINE CAPTAIN
    ========================================================= */
 
-function onlineShowPrivateCaptain(
-    data
-) {
+function onlineShowPrivateCaptain() { return; }
 
-    $("captainTieOptions").innerHTML =
-        `
-            <p>
-                The vote is tied.
-                Choose one player to eject.
-            </p>
+function hostReceiveCaptainChoice() { return; }
 
-            ${
-                (data.targets || [])
-                    .map(
-                        target =>
-                            button(
-                                esc(target.name),
-                                target.id
-                            )
-                    )
-                    .join("")
-            }
-        `;
+function onlineShowPrivateJudge() { return; }
 
-    $("captainTieOptions")
-        .querySelectorAll("button")
-        .forEach(btn => {
-
-            btn.onclick = () => {
-
-                sendPrivateToHost({
-                    type:
-                        "captain_choice",
-
-                    target:
-                        btn.dataset.value
-                });
-            };
-        });
-
-    setScreen(
-        "captainTieScreen"
-    );
-}
-
-
-/* =========================================================
-   HOST CAPTAIN
-   ========================================================= */
-
-function hostReceiveCaptainChoice(
-    player,
-    target
-) {
-
-    if (
-        player.role !== "captain" ||
-        !game.systems.power ||
-        game.blockedPlayers.has(
-            player.id
-        )
-    ) {
-        return;
-    }
-
-    if (
-        !game.pendingEjection
-    ) {
-        /*
-           Host resolves tie from fresh tally.
-        */
-    }
-
-    if (!online.captainTargets?.includes(target) || !alive(getPlayer(target))) {
-        return;
-    }
-
-    online.activeTurn = null;
-    online.captainTargets = null;
-    finishEjection(
-        target,
-        true
-    );
-}
-
-
-/* =========================================================
-   ONLINE JUDGE
-   ========================================================= */
-
-function onlineShowPrivateJudge(
-    data
-) {
-
-    $("judgeDescription").textContent =
-        `The vote would eject ${data.targetName}. Cancel the ejection?`;
-
-    $("judgeCancelButton").onclick =
-        () => {
-
-            sendPrivateToHost({
-                type:
-                    "judge_choice",
-
-                cancel:
-                    true
-            });
-        };
-
-    $("judgeAllowButton").onclick =
-        () => {
-
-            sendPrivateToHost({
-                type:
-                    "judge_choice",
-
-                cancel:
-                    false
-            });
-        };
-
-    setScreen(
-        "judgeScreen"
-    );
-}
-
-
-function hostReceiveJudgeChoice(
-    player,
-    cancel
-) {
-
-    if (
-        player.role !== "judge" ||
-        game.judgeUsed ||
-        !game.systems.power ||
-        game.blockedPlayers.has(
-            player.id
-        )
-    ) {
-        return;
-    }
-
-    if (
-        !game.pendingEjection
-    ) {
-        return;
-    }
-
-    online.activeTurn = null;
-    game.pendingJudge = false;
-    if (cancel) {
-
-        game.judgeUsed = true;
-
-        const target =
-            game.pendingEjection.id;
-
-        game.pendingEjection =
-            null;
-
-        onlineBroadcast({
-            type:
-                "public_update",
-
-            players:
-                game.players.map(
-                    p => ({
-                        id:
-                            p.id,
-                        name:
-                            p.name,
-                        alive:
-                            p.alive
-                    })
-                ),
-
-            round:
-                game.round,
-
-            stage:
-                game.stage,
-
-            systems:
-                game.systems
-        });
-
-        sendPrivateResultsAll(
-            "EJECTION CANCELLED",
-            "The Judge cancelled the ejection. Nobody was voted out."
-        );
-
-        if (settleVoteObjectives(null)) return;
-        afterVoting();
-
-    } else {
-
-        const pending =
-            game.pendingEjection;
-
-        game.pendingEjection =
-            null;
-
-        completeEjection(
-            pending.id,
-            pending.byCaptain
-        );
-    }
-}
-
-
-/* =========================================================
-   PRIVATE RESULT
-   ========================================================= */
+function hostReceiveJudgeChoice() { return; }
 
 function onlineShowPrivateResult(
     data
@@ -8056,162 +7603,8 @@ const originalResolveVoting =
     resolveVoting;
 
 function resolveVotingOnlineAware() {
-
-    if (
-        game.mode !== "online" ||
-        !online.isHost
-    ) {
-
-        originalResolveVoting();
-
-        return;
-    }
-
-    if (resolveAllClear()) return;
-    const tally = {};
-
-    Object.entries(
-        game.votes
-    ).filter(([id]) => alive(getPlayer(id)) && !isVoteSilenced(getPlayer(id)))
-    .map(([, vote]) => vote).forEach(
-        vote => {
-
-            if (
-                vote === "allclear"
-            ) return;
-
-            tally[vote] =
-                (tally[vote] || 0) + 1;
-        }
-    );
-
-    const max =
-        Math.max(
-            0,
-            ...Object.values(tally)
-        );
-
-    const tied =
-        Object.keys(tally)
-            .filter(
-                id =>
-                    tally[id] === max &&
-                    max > 0
-            );
-
-    // A Captain cannot override a winning or tied no-ejection ballot.
-    if (!tied.length || tied.includes("skip")) {
-
-        completeEjection(
-            null,
-            false
-        );
-
-        return;
-    }
-
-    if (
-        tied.length === 1
-    ) {
-
-        const captain =
-            null;
-
-        /*
-           Normal majority still gives Judge
-           the opportunity to cancel.
-        */
-
-        const judge =
-            living().find(
-                p =>
-                    p.role === "judge" &&
-                    !game.judgeUsed &&
-                    game.systems.power &&
-                    !game.blockedPlayers.has(
-                        p.id
-                    )
-            );
-
-        if (judge) {
-
-            game.pendingEjection = {
-                id:
-                    tied[0],
-                byCaptain:
-                    false
-            };
-
-            sendPrivateToPlayer(
-                judge.id,
-                {
-                    type:
-                        "private_judge",
-
-                    target:
-                        tied[0],
-
-                    targetName:
-                        displayName(
-                            tied[0]
-                        )
-                }
-            );
-
-            return;
-        }
-
-        completeEjection(
-            tied[0],
-            false
-        );
-
-        return;
-    }
-
-    /*
-       Tie -> Captain.
-    */
-
-    const captain =
-        living().find(
-            p =>
-                p.role === "captain" &&
-                game.systems.power &&
-                !game.blockedPlayers.has(
-                    p.id
-                )
-        );
-
-    if (captain) {
-        online.captainTargets = tied;
-
-        sendPrivateToPlayer(
-            captain.id,
-            {
-                type:
-                    "private_captain",
-
-                targets:
-                    tied.map(
-                        id => ({
-                            id,
-                            name:
-                                displayName(
-                                    id
-                                )
-                        })
-                    )
-            }
-        );
-
-        return;
-    }
-
-    completeEjection(
-        null,
-        false
-    );
+    if (game.mode === "online" && (!online.isHost || online.paused)) return;
+    originalResolveVoting();
 }
 
 resolveVoting =

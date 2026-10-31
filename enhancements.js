@@ -206,7 +206,7 @@ function initAtmosphere() {
 
 // Record resolved actions for the post-game reveal; private snapshots never enter public packets.
 function replayActionText(actor, action) {
-    const names = {none:"passed",kill:"attempted an attack",sabotage:"sabotaged a system",repair:"repaired a system",repairAccident:"suffered a fatal engine overload",protect:"provided protection",block:"blocked an ability",silence:"silenced a player",infect:"infected a player",radio:"requested an Earth transmission",investigate:"investigated a player",science:"used a science ability",predict:"sealed an Oracle prediction",bounty:"marked a bounty",swap:"swapped identities",backup:"supplied backup power",analyse:"selected a player to analyse"};
+    const names = {none:"passed",kill:"attempted an attack",sabotage:"sabotaged a system",repair:"repaired a system",repairAccident:"suffered a fatal engine overload",protect:"provided protection",block:"blocked an ability",silence:"silenced a player",infect:"infected a player",radio:"requested an Earth transmission",investigate:"investigated a player",science:"used a science ability",predict:"sealed an Oracle prediction",bounty:"marked a bounty",swap:"swapped identities",harden:"scheduled next-round system hardening",captain_eject:"ordered a private night ejection",pardon:"armed a vote pardon",analyse:"selected a player to analyse"};
     const target = action.target ? ` → ${["skip","allclear"].includes(action.target) ? action.target : realName(action.target)}` : "";
     return `${realName(actor)} ${names[action.type] || action.type}${action.system ? " · " + action.system.toUpperCase() : ""}${target}${action.mode ? " · " + action.mode : ""}.`;
 }

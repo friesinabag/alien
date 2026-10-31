@@ -23,9 +23,11 @@ function resetMission() {
     game.repairChallenges = {};
     game.repairView = null;
     game.repairImmunity = {};
+    game.systemHardening = [];
+    game.judgePardons = new Set();
     game.publicClueRound = null;
     game.timeline = [];
-    game.players.forEach(p => { p.preInfectionRole = null; });
+    game.players.forEach(p => { p.preInfectionRole = null; p.captainWarrantRound = null; p.judgeUsed = false; });
     online.paused = false;
     online.lastPackets = {};
     online.finalResult = null;
@@ -60,6 +62,8 @@ function beginMissionRound() {
     game.eventRound = game.round;
     game.repairChallenges = {};
     game.repairView = null;
+    game.systemHardening = (game.systemHardening || []).filter(item => item.round >= game.round);
+    game.players.forEach(p => { if (p.captainWarrantRound != null && p.captainWarrantRound < game.round) p.captainWarrantRound = null; });
     logMission("round begins", null, {text: `Flight stage ${game.stage}.`});
     game.shipEvent = null;
     if (game.round > 1 && Math.random() < missionRules().eventChance / 100) {
@@ -176,6 +180,8 @@ function resolveAllClear() {
 }
 
 function objectiveProgress(player) {
+    if (player.role === "captain") return {title:"Night authorization",text:player.captainWarrantRound === game.round ? "One private night ejection is available on your normal turn. You may choose any other living player or pass." : "A player-vote tie grants one ejection on your next normal ability turn. Skip-led votes do not grant one."};
+    if (player.role === "judge") return {title:"Emergency pardon",text:player.judgeUsed ? "Your one pardon has been used." : game.judgePardons?.has(player.id) ? "A pardon is armed for this vote. It will be used automatically if needed." : "One pardon available. Arm it during your normal ability turn."};
     if (player.role === "bountyhunter") return {title: "Bounty contract", text: player.bountyTarget ? `Target: ${realName(player.bountyTarget)}. ${player.bountyFailed ? "Failed: target died without a vote ejection." : "Stay alive and have your target voted out."}` : game.round === 1 ? "Choose your permanent target this round." : "Failed: no target was marked in round 1."};
     if (player.role === "oracle") return {title: "Oracle predictions", text: `${player.oracleCorrect || 0} / 3 correct. Player ejection: ${player.oraclePlayerCorrect ? "completed" : "required"}.${player.lastOracleResult ? ` ${player.lastOracleResult.message}` : ""}`};
     if (player.role === "trickster") return {title: "Identity swap", text: player.tricksterUsed ? "Your one swap has been used." : "One swap available. Survive to Earth for a Neutral win."};
@@ -234,6 +240,42 @@ function validEngineAccident(player, action) {
 
 function canSabotageSystem(system) {
     return game.systems[system] === true && (game.repairImmunity?.[system] ?? -1) < game.round;
+}
+
+function grantCaptainNightOrders() {
+    const round = game.openingVote ? game.round : game.round + 1;
+    for (const player of living().filter(p => p.role === "captain")) {
+        player.captainWarrantRound = round;
+        logMission("night authorization", player.id, {text:`A player-vote tie authorized one night ejection in round ${round}.`});
+    }
+}
+
+function consumeSystemHardening(system, saboteur) {
+    const index = (game.systemHardening || []).findIndex(item => item.system === system && item.round === game.round);
+    if (index < 0) return false;
+    const [patch] = game.systemHardening.splice(index,1);
+    game.reactionInfo[saboteur.id] = `SABOTAGE FAILED: ${system.toUpperCase()} was hardened against this attempt.`;
+    game.lastRoundResults.push(`SECURITY: ${system.toUpperCase()} resisted a sabotage attempt.`);
+    logMission("sabotage prevented",patch.actor,{target:saboteur.id,system,text:`Next-round hardening protected ${system.toUpperCase()} from sabotage.`});
+    return true;
+}
+
+function renderHardeningChoices() {
+    $("actionDescription").textContent = `Choose one ship system to resist one sabotage in round ${game.round+1}. This round's sabotages are unaffected.`;
+    $("actionOptions").innerHTML = Object.keys(game.systems).map(system => button(esc(system.toUpperCase()),system)).join("") + button("PASS · NO HARDENING","none");
+    $("actionOptions").querySelectorAll("button").forEach(btn => btn.onclick = () => {
+        game.selectedAction = btn.dataset.value === "none" ? "none" : {type:"harden",system:btn.dataset.value};
+        $("actionOptions").querySelectorAll("button").forEach(b => b.classList.remove("selected"));btn.classList.add("selected");
+    });
+}
+
+function renderPardonChoices() {
+    $("actionDescription").textContent = "Secretly arm a pardon for this round's vote, or pass. No extra turn occurs after voting. Your one use is spent only if it cancels an ejection.";
+    $("actionOptions").innerHTML = button("ARM PARDON","pardon") + button("PASS · KEEP PARDON","none");
+    $("actionOptions").querySelectorAll("button").forEach(btn => btn.onclick = () => {
+        game.selectedAction = btn.dataset.value === "pardon" ? {type:"pardon"} : "none";
+        $("actionOptions").querySelectorAll("button").forEach(b => b.classList.remove("selected"));btn.classList.add("selected");
+    });
 }
 
 function preparePublicBriefing() {
