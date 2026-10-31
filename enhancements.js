@@ -115,56 +115,93 @@ function renderHostRules() {
 }
 
 // Only public state can drive sound or effects, even on the host's private turns.
-const missionFX = {sound:false,motion:false,volume:25,systems:{power:true,o2:true,engines:true,communications:true},screen:"setupScreen",audio:null,nodes:[],alarm:null,output:null};
+// The locally hosted recording is decoded once; screen changes never restart the loop.
+const missionFX = {sound:false,motion:false,volume:20,systems:{power:true,o2:true,engines:true,communications:true},screen:'setupScreen',audio:null,source:null,output:null,filter:null,buffer:null,loading:null,request:0,error:false};
 function publishAtmosphere(systems) { if (systems) missionFX.systems = {...systems}; refreshAtmosphere(); }
+function atmosphereActive() {return !['setupScreen','gameOverScreen','replayScreen'].includes(missionFX.screen) && !game.gameOver && !document.hidden && missionFX.sound && missionFX.volume>0;}
 function silenceAtmosphere() {
-    if (missionFX.alarm) clearInterval(missionFX.alarm); missionFX.alarm = null;
-    missionFX.nodes.forEach(node=>{try {node.stop();}catch{}}); missionFX.nodes = [];
-    if (missionFX.output) {missionFX.output.disconnect();missionFX.output=null;}
-    if (missionFX.audio && missionFX.audio.state !== "closed") missionFX.audio.suspend().catch(()=>{});
+    missionFX.request++;
+    if(missionFX.source){try{missionFX.source.stop();}catch{}missionFX.source.disconnect();missionFX.source=null;}
+    if(missionFX.output){missionFX.output.disconnect();missionFX.output=null;}
+    if(missionFX.filter){missionFX.filter.disconnect();missionFX.filter=null;}
+    if(missionFX.audio?.state === 'running')missionFX.audio.suspend().catch(()=>{});
+}
+function softenLoop(ctx,decoded) {
+    // Blend the original tail into its head to mask MP3 boundaries without a silent gap.
+    const overlap=Math.min(Math.floor(decoded.sampleRate*.15),Math.floor(decoded.length/8));
+    if(overlap<2)return decoded;
+    const loop=ctx.createBuffer(decoded.numberOfChannels,decoded.length-overlap,decoded.sampleRate);
+    for(let channel=0;channel<decoded.numberOfChannels;channel++) {
+        const input=decoded.getChannelData(channel),output=loop.getChannelData(channel),body=decoded.length-2*overlap;
+        output.set(input.subarray(overlap,decoded.length-overlap));
+        for(let i=0;i<overlap;i++){const blend=i/(overlap-1);output[body+i]=input[decoded.length-overlap+i]*(1-blend)+input[i]*blend;}
+    }
+    return loop;
+}
+function loadShipAmbience() {
+    if(missionFX.buffer)return Promise.resolve(missionFX.buffer);
+    if(missionFX.loading)return missionFX.loading;
+    const ctx=missionFX.audio;
+    missionFX.loading=fetch('ship-ambience.mp3').then(response=>{
+        if(!response.ok)throw new Error('Ship ambience could not be loaded.');
+        return response.arrayBuffer();
+    }).then(bytes=>ctx.decodeAudioData(bytes)).then(decoded=>{
+        missionFX.buffer=softenLoop(ctx,decoded);missionFX.error=false;return missionFX.buffer;
+    }).finally(()=>{missionFX.loading=null;});
+    return missionFX.loading;
+}
+function updateAmbienceLevel() {
+    if(!missionFX.output)return;
+    const ctx=missionFX.audio,engineLevel=missionFX.systems.engines?1:.65;
+    missionFX.output.gain.setTargetAtTime(missionFX.volume/100*.55*engineLevel,ctx.currentTime,.25);
+    missionFX.filter.frequency.setTargetAtTime(missionFX.systems.engines?2400:900,ctx.currentTime,.4);
+}
+function updateAtmosphereSummary() {
+    const summary=$('atmosphereSummary');if(!summary)return;
+    summary.textContent=!missionFX.sound?'Sound off':missionFX.error?'Audio unavailable':missionFX.loading?'Loading ambience…':'Sound on';
 }
 function refreshAtmosphere() {
-    const active = !["setupScreen","gameOverScreen","replayScreen"].includes(missionFX.screen) && !game.gameOver;
-    document.body?.classList.toggle("ship-motion",missionFX.motion && active);
-    document.body?.classList.toggle("ship-blackout",active && !missionFX.systems.power);
-    document.body?.classList.toggle("ship-low-air",active && !missionFX.systems.o2);
-    const summary = $("atmosphereSummary"); if (summary) summary.textContent = missionFX.sound ? "Sound on" : "Sound off";
-    silenceAtmosphere();
-    if (!active || !missionFX.sound || !missionFX.volume || document.hidden) return;
-    const Audio = window.AudioContext || window.webkitAudioContext; if (!Audio) return;
+    const active=!['setupScreen','gameOverScreen','replayScreen'].includes(missionFX.screen)&&!game.gameOver;
+    document.body?.classList.toggle('ship-motion',missionFX.motion&&active);
+    document.body?.classList.toggle('ship-blackout',active&&!missionFX.systems.power);
+    document.body?.classList.toggle('ship-low-air',active&&!missionFX.systems.o2);
+    updateAtmosphereSummary();
+    if(!atmosphereActive()){silenceAtmosphere();return;}
+    const Audio=window.AudioContext||window.webkitAudioContext;if(!Audio){missionFX.error=true;updateAtmosphereSummary();return;}
     try {
-        missionFX.audio ||= new Audio(); const ctx = missionFX.audio;
+        if(!missionFX.audio || missionFX.audio.state==='closed')missionFX.audio=new Audio();const ctx=missionFX.audio;
+        // Called directly on a touch/change gesture as well as public phase changes.
         ctx.resume().catch(()=>{});
-        const gain = ctx.createGain(); missionFX.output=gain;gain.gain.value = missionFX.volume / 100 * .08; gain.connect(ctx.destination);
-        const hum = ctx.createOscillator(); hum.type = "sine"; hum.frequency.value = missionFX.systems.engines ? 58 : 38; hum.connect(gain); hum.start(); missionFX.nodes.push(hum);
-        if (!missionFX.systems.communications) {
-            const buffer = ctx.createBuffer(1,ctx.sampleRate,ctx.sampleRate), samples = buffer.getChannelData(0);
-            for(let i=0;i<samples.length;i++) samples[i]=(Math.random()*2-1)*.12;
-            const noise=ctx.createBufferSource(), filter=ctx.createBiquadFilter(); noise.buffer=buffer;noise.loop=true;filter.type="bandpass";filter.frequency.value=1100;noise.connect(filter);filter.connect(gain);noise.start();missionFX.nodes.push(noise);
-        }
-        if (!missionFX.systems.o2) {
-            const alarm=()=>{if(ctx.state!=="running")return;const tone=ctx.createOscillator(),g=ctx.createGain();tone.frequency.value=440;g.gain.setValueAtTime(0,ctx.currentTime);g.gain.linearRampToValueAtTime(missionFX.volume/100*.04,ctx.currentTime+.05);g.gain.linearRampToValueAtTime(0,ctx.currentTime+.55);tone.connect(g);g.connect(ctx.destination);tone.start();tone.stop(ctx.currentTime+.6);};
-            alarm();missionFX.alarm=setInterval(alarm,4000);
-        }
-    } catch { silenceAtmosphere(); }
+        if(missionFX.source){updateAmbienceLevel();return;}
+        const request=++missionFX.request;
+        const loading=loadShipAmbience();updateAtmosphereSummary();
+        loading.then(buffer=>{
+            if(request!==missionFX.request||!atmosphereActive())return;
+            const gain=ctx.createGain(),filter=ctx.createBiquadFilter(),source=ctx.createBufferSource();
+            gain.gain.setValueAtTime(0,ctx.currentTime);filter.type='lowpass';
+            source.buffer=buffer;source.loop=true;source.connect(filter);filter.connect(gain);gain.connect(ctx.destination);
+            missionFX.source=source;missionFX.filter=filter;missionFX.output=gain;
+            updateAmbienceLevel();source.start();updateAtmosphereSummary();
+        }).catch(()=>{
+            if(request!==missionFX.request)return;
+            silenceAtmosphere();missionFX.error=true;updateAtmosphereSummary();
+        });
+    }catch{silenceAtmosphere();missionFX.error=true;updateAtmosphereSummary();}
 }
 function initAtmosphere() {
-    const controls = document.querySelector(".atmosphere-controls");
-    if (controls) document.querySelector(".masthead")?.after(controls);
-    try { const saved = JSON.parse(localStorage.getItem("alien-atmosphere") || "{}"); missionFX.sound = saved.sound === true; missionFX.motion = saved.motion === true; missionFX.volume = Number.isFinite(saved.volume) ? Math.max(0,Math.min(100,saved.volume)) : 25; } catch {}
-    $("atmosphereSound").checked = missionFX.sound; $("atmosphereMotion").checked = missionFX.motion; $("atmosphereVolume").value = missionFX.volume;
-    const update = () => {
-        const unchangedToggles=missionFX.sound === $("atmosphereSound").checked && missionFX.motion === $("atmosphereMotion").checked;
-        missionFX.sound = $("atmosphereSound").checked; missionFX.motion = $("atmosphereMotion").checked; missionFX.volume = Number($("atmosphereVolume").value);
-        try { localStorage.setItem("alien-atmosphere",JSON.stringify({sound:missionFX.sound,motion:missionFX.motion,volume:missionFX.volume})); } catch {}
-        if (unchangedToggles && missionFX.output && missionFX.volume) { missionFX.output.gain.setTargetAtTime(missionFX.volume/100*.08,missionFX.audio.currentTime,.05); return; }
+    const controls=document.querySelector('.atmosphere-controls');
+    if(controls)document.querySelector('.masthead')?.after(controls);
+    try{const saved=JSON.parse(localStorage.getItem('alien-atmosphere')||'{}');missionFX.sound=saved.sound===true;missionFX.motion=saved.motion===true;missionFX.volume=Number.isFinite(saved.volume)?Math.max(0,Math.min(100,saved.volume)):20;}catch{}
+    $('atmosphereSound').checked=missionFX.sound;$('atmosphereMotion').checked=missionFX.motion;$('atmosphereVolume').value=missionFX.volume;
+    const update=()=>{
+        missionFX.sound=$('atmosphereSound').checked;missionFX.motion=$('atmosphereMotion').checked;missionFX.volume=Number($('atmosphereVolume').value);
+        try{localStorage.setItem('alien-atmosphere',JSON.stringify({sound:missionFX.sound,motion:missionFX.motion,volume:missionFX.volume}));}catch{}
         refreshAtmosphere();
     };
-    $("atmosphereSound").onchange = update; $("atmosphereMotion").onchange = update; $("atmosphereVolume").oninput = update;
-    // Safari requires a user gesture to resume Web Audio, including after an app switch.
-    document.addEventListener("pointerdown",()=>{if(missionFX.sound && (!missionFX.audio || missionFX.audio.state === "suspended"))refreshAtmosphere();},{passive:true});
-    document.addEventListener("visibilitychange",()=>{if(document.hidden)pauseMissionReplay();refreshAtmosphere();});
-    window.addEventListener?.("pagehide",()=>{silenceAtmosphere();pauseMissionReplay();});refreshAtmosphere();
+    $('atmosphereSound').onchange=update;$('atmosphereMotion').onchange=update;$('atmosphereVolume').oninput=update;
+    document.addEventListener('pointerdown',()=>{if(missionFX.sound&&(!missionFX.audio||missionFX.audio.state!=='running'))refreshAtmosphere();},{passive:true});
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)pauseMissionReplay();refreshAtmosphere();});
+    window.addEventListener?.('pagehide',()=>{silenceAtmosphere();pauseMissionReplay();});refreshAtmosphere();
 }
 
 // Record resolved actions for the post-game reveal; private snapshots never enter public packets.

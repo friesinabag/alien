@@ -1100,3 +1100,9 @@ button{min-height:46px;border-radius:10px;letter-spacing:.6px;font-size:12px}but
   .briefing-card {padding:16px;}
   .replay-crew-card {min-width:0;overflow-wrap:anywhere;}
 }
+/* A visible directional sweep: rotating the old symmetric ring alone was imperceptible. */
+.briefing-radar {display:block;position:relative;width:1em;height:1em;flex-shrink:0;}
+.briefing-radar::before {content:'';position:absolute;inset:10%;border-radius:50%;background:conic-gradient(from 0deg,transparent 260deg,#78d9c744 340deg,transparent 360deg);pointer-events:none;}
+.briefing-radar::after {content:'';position:absolute;left:50%;top:50%;width:40%;height:2px;background:#a8ffdf;box-shadow:0 0 6px #78d9c7;transform-origin:0 50%;pointer-events:none;}
+.atmosphere-credit {font-size:.75rem;line-height:1.6;color:var(--muted);}
+.atmosphere-credit a {color:#a2c6ff;text-underline-offset:3px;}
